@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Header } from "@/components/Header";
 import { CategorySelector } from "@/components/CategorySelector";
 import { SymbolSelector } from "@/components/SymbolSelector";
@@ -9,81 +9,110 @@ import { IVSmileChart } from "@/components/IVSmileChart";
 import { TypeToggle } from "@/components/TypeToggle";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingSkeleton } from "@/components/LoadingSkeleton";
-import { Download, RefreshCw, Info } from "lucide-react";
+import { Download, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   COMMODITY_SYMBOLS,
   generateMaturities,
-  generateDemoOptionsData,
   type CommodityCategory,
   type CommoditySymbol,
   type Maturity,
   type OptionsChain,
 } from "@/lib/commodityData";
+import { fetchOptionsData, fetchCategorySymbols } from "@/lib/barchartApi";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Index() {
   const { toast } = useToast();
   const [category, setCategory] = useState<CommodityCategory>("energies");
-  const [symbol, setSymbol] = useState<CommoditySymbol | null>(null);
-  const [maturity, setMaturity] = useState<Maturity | null>(null);
+  const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
+  const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
+  const [maturity, setMaturity] = useState<Maturity | null>(() => {
+    const mats = generateMaturities();
+    return mats.length > 0 ? mats[0] : null;
+  });
   const [optionsData, setOptionsData] = useState<OptionsChain | null>(null);
   const [optionType, setOptionType] = useState<"calls" | "puts" | "all">("all");
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const symbols = COMMODITY_SYMBOLS[category];
   const maturities = generateMaturities();
 
-  // Set default symbol when category changes
+  // Load symbols when category changes
   useEffect(() => {
-    if (symbols.length > 0) {
-      setSymbol(symbols[0]);
-    }
-  }, [category, symbols]);
+    const loadSymbols = async () => {
+      setIsLoadingSymbols(true);
+      try {
+        const fetchedSymbols = await fetchCategorySymbols(category);
+        setSymbols(fetchedSymbols);
+        if (fetchedSymbols.length > 0) {
+          setSymbol(fetchedSymbols[0]);
+        }
+      } catch (err) {
+        console.error('Failed to load symbols:', err);
+        // Fall back to static symbols
+        const staticSymbols = COMMODITY_SYMBOLS[category];
+        setSymbols(staticSymbols);
+        if (staticSymbols.length > 0) {
+          setSymbol(staticSymbols[0]);
+        }
+      } finally {
+        setIsLoadingSymbols(false);
+      }
+    };
 
-  // Set default maturity on mount
-  useEffect(() => {
-    if (maturities.length > 0 && !maturity) {
-      setMaturity(maturities[0]);
-    }
-  }, []);
+    loadSymbols();
+  }, [category]);
 
-  // Load data when symbol or maturity changes
-  useEffect(() => {
-    if (symbol && maturity) {
-      setIsLoading(true);
-      
-      const timer = setTimeout(() => {
-        const data = generateDemoOptionsData(symbol, maturity);
-        setOptionsData(data);
-        setIsLoading(false);
-        
-        toast({
-          title: "Data loaded",
-          description: `Showing options for ${symbol.name} - ${maturity.label}`,
-        });
-      }, 600);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [symbol, maturity, toast]);
+  // Note: maturities are set in initial state now
 
-  const loadOptionsData = () => {
+  // Load options data when symbol or maturity changes
+  const loadOptionsData = useCallback(async () => {
     if (!symbol || !maturity) return;
 
     setIsLoading(true);
-    
-    setTimeout(() => {
-      const data = generateDemoOptionsData(symbol, maturity);
-      setOptionsData(data);
-      setIsLoading(false);
+    setError(null);
 
+    try {
+      const data = await fetchOptionsData(symbol, maturity);
+      
+      if (data) {
+        setOptionsData(data);
+        
+        if (data.calls.length === 0 && data.puts.length === 0) {
+          toast({
+            title: "Données limitées",
+            description: "Aucune donnée d'options n'a été trouvée pour cette combinaison symbole/maturité.",
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Données chargées",
+            description: `${data.calls.length} calls et ${data.puts.length} puts pour ${symbol.name}`,
+          });
+        }
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Erreur lors du chargement des données';
+      setError(errorMessage);
+      setOptionsData(null);
       toast({
-        title: "Data loaded",
-        description: `Showing options for ${symbol.name} - ${maturity.label}`,
+        title: "Erreur",
+        description: errorMessage,
+        variant: "destructive",
       });
-    }, 600);
-  };
+    } finally {
+      setIsLoading(false);
+    }
+  }, [symbol, maturity, toast]);
+
+  // Trigger data load when symbol or maturity changes
+  useEffect(() => {
+    if (symbol && maturity) {
+      loadOptionsData();
+    }
+  }, [symbol, maturity, loadOptionsData]);
 
   const handleRefresh = () => {
     loadOptionsData();
@@ -102,8 +131,8 @@ export default function Index() {
     URL.revokeObjectURL(url);
 
     toast({
-      title: "Downloaded",
-      description: "Options data exported to CSV",
+      title: "Téléchargé",
+      description: "Données exportées en CSV",
     });
   };
 
@@ -129,18 +158,6 @@ export default function Index() {
       <Header />
 
       <main className="container mx-auto px-6 py-8">
-        {/* Info Banner */}
-        <div className="mb-6 p-4 rounded-lg bg-accent/10 border border-accent/20 flex items-start gap-3">
-          <Info className="w-5 h-5 text-accent mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="text-sm text-foreground font-medium">Demo Mode</p>
-            <p className="text-xs text-muted-foreground">
-              This dashboard displays simulated options data. To fetch live data from Barchart, 
-              connect Lovable Cloud with the Firecrawl integration.
-            </p>
-          </div>
-        </div>
-
         {/* Selectors */}
         <div className="space-y-6 mb-8">
           <CategorySelector selected={category} onSelect={setCategory} />
@@ -165,26 +182,37 @@ export default function Index() {
                 className="border-border hover:border-primary/50"
               >
                 <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
-                Refresh
+                Actualiser
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleDownload}
-                disabled={!optionsData}
+                disabled={!optionsData || optionsData.calls.length === 0}
                 className="border-border hover:border-primary/50"
               >
                 <Download className="w-4 h-4 mr-2" />
-                Download
+                Télécharger
               </Button>
             </div>
           </div>
         </div>
 
+        {/* Error State */}
+        {error && (
+          <div className="mb-6 p-4 rounded-lg bg-destructive/10 border border-destructive/20 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-destructive mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm text-foreground font-medium">Erreur de chargement</p>
+              <p className="text-xs text-muted-foreground">{error}</p>
+            </div>
+          </div>
+        )}
+
         {/* Content */}
         {isLoading ? (
           <LoadingSkeleton />
-        ) : optionsData ? (
+        ) : optionsData && (optionsData.calls.length > 0 || optionsData.puts.length > 0) ? (
           <div className="space-y-6 animate-fade-in">
             {/* Contract Info */}
             <div className="flex items-center justify-between">
@@ -196,7 +224,7 @@ export default function Index() {
                   </span>
                 </h2>
                 <p className="text-muted-foreground">
-                  {optionsData.maturity} • Volatility & Greeks
+                  {optionsData.maturity || maturity?.label} • Volatilité & Greeks
                 </p>
               </div>
             </div>
@@ -205,12 +233,14 @@ export default function Index() {
             <StatsCards data={optionsData} />
 
             {/* IV Smile Chart */}
-            <IVSmileChart calls={optionsData.calls} puts={optionsData.puts} />
+            {optionsData.calls.length > 0 && (
+              <IVSmileChart calls={optionsData.calls} puts={optionsData.puts} />
+            )}
 
             {/* Options Table */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-foreground">Options Chain</h3>
+                <h3 className="text-lg font-semibold text-foreground">Chaîne d'Options</h3>
                 <TypeToggle selected={optionType} onSelect={setOptionType} />
               </div>
               <OptionsTable
@@ -220,16 +250,16 @@ export default function Index() {
               />
             </div>
           </div>
-        ) : (
+        ) : !isLoading && !error ? (
           <EmptyState />
-        )}
+        ) : null}
       </main>
 
       {/* Footer */}
       <footer className="border-t border-border mt-12 py-6">
         <div className="container mx-auto px-6">
           <p className="text-center text-sm text-muted-foreground">
-            Data sourced from Barchart.com • Options volatility and greeks for commodity futures
+            Données extraites de Barchart.com • Volatilité implicite et Greeks pour les options sur commodités
           </p>
         </div>
       </footer>

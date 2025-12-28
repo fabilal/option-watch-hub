@@ -1,1 +1,7 @@
 project_id = "eugvjubeuyukhgcwfncr"
+
+[functions.scrape-barchart-options]
+verify_jwt = false
+
+[functions.scrape-barchart-symbols]
+verify_jwt = false
