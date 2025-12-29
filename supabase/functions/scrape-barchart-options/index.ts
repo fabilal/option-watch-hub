@@ -33,7 +33,6 @@ interface OptionsChainResponse {
 }
 
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -72,9 +71,9 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         url,
-        formats: ['markdown', 'html'],
-        onlyMainContent: true,
-        waitFor: 3000,
+        formats: ['markdown'],
+        onlyMainContent: false,
+        waitFor: 5000,
       }),
     });
 
@@ -93,12 +92,11 @@ serve(async (req) => {
 
     console.log('Scrape successful, parsing options data...');
 
-    // Parse the scraped content
     const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-    const html = scrapeData.data?.html || scrapeData.html || '';
+    console.log(`Markdown length: ${markdown.length}`);
 
-    // Parse options data from markdown
-    const parsedData = parseOptionsFromContent(markdown, html, fullSymbol, name, optionPointValue);
+    // Parse the markdown content
+    const parsedData = parseOptionsFromMarkdown(markdown, fullSymbol, name, optionPointValue);
 
     console.log(`Parsed ${parsedData.calls.length} calls and ${parsedData.puts.length} puts`);
 
@@ -119,159 +117,191 @@ serve(async (req) => {
   }
 });
 
-function parseOptionsFromContent(
-  markdown: string, 
-  html: string,
+function parseOptionsFromMarkdown(
+  markdown: string,
   symbol: string,
   name: string,
   optionPointValue: number
 ): OptionsChainResponse {
   const calls: OptionData[] = [];
   const puts: OptionData[] = [];
-  
   let daysToExpiration = 0;
   let impliedVolatility = 0;
-  
-  // Extract days to expiration from markdown
-  const daysMatch = markdown.match(/(\d+)\s*Days?\s*to\s*expiration/i);
+  let maturity = '';
+
+  // Extract days to expiration: "**16 Days** to expiration"
+  const daysMatch = markdown.match(/\*\*(\d+)\s*Days?\*\*\s*to\s*expiration/i);
   if (daysMatch) {
     daysToExpiration = parseInt(daysMatch[1], 10);
+    console.log(`Found days to expiration: ${daysToExpiration}`);
   }
-  
-  // Extract implied volatility
-  const ivMatch = markdown.match(/Implied\s*Volatility[:\s]*(\d+\.?\d*)%?/i);
+
+  // Extract implied volatility: "Implied Volatility: **29.58%**"
+  const ivMatch = markdown.match(/Implied\s*Volatility[:\s]*\*?\*?(\d+\.?\d*)%?\*?\*?/i);
   if (ivMatch) {
     impliedVolatility = parseFloat(ivMatch[1]);
+    console.log(`Found implied volatility: ${impliedVolatility}%`);
   }
-  
-  // Extract maturity from markdown
-  let maturity = '';
-  const maturityMatch = markdown.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}/i);
+
+  // Extract maturity from page title or content
+  const maturityMatch = markdown.match(/(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*['']?\d{2,4}/i);
   if (maturityMatch) {
     maturity = maturityMatch[0];
+    console.log(`Found maturity: ${maturity}`);
   }
+
+  // Split markdown into lines and process
+  const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.length > 0);
   
-  // Parse option rows from markdown content
-  // Look for patterns like: Strike | Type | Latest | IV | Delta | Gamma | Theta | Vega | IV Skew | Last Trade
-  const lines = markdown.split('\n');
-  
+  // Find the Calls and Puts sections
   let inCallsSection = false;
   let inPutsSection = false;
+  let currentOption: Partial<OptionData> = {};
+  let fieldIndex = 0;
+  
+  // The field order after "Call" or "Put" is:
+  // Latest, IV, Delta, Gamma, Theta, Vega, IV Skew, Last Trade
+  const fieldNames = ['latest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'ivSkew', 'lastTrade'];
   
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const line = lines[i];
     
-    if (line.toLowerCase().includes('calls') && !line.toLowerCase().includes('puts')) {
+    // Detect section markers
+    if (line === '#### Calls' || line.toLowerCase() === 'calls') {
       inCallsSection = true;
       inPutsSection = false;
+      currentOption = {};
+      fieldIndex = 0;
       continue;
     }
     
-    if (line.toLowerCase().includes('puts')) {
+    if (line === '#### Puts' || line.toLowerCase() === 'puts') {
       inCallsSection = false;
       inPutsSection = true;
+      currentOption = {};
+      fieldIndex = 0;
       continue;
     }
     
-    // Try to parse option row - look for numeric patterns
-    // Format: Strike | Type | Latest | IV | Delta | Gamma | Theta | Vega | IV Skew | Last Trade
-    const optionMatch = line.match(
-      /(\d+\.?\d*)\s+(?:\|)?\s*(Call|Put)\s+(?:\|)?\s*(\d+\.?\d*s?)\s+(?:\|)?\s*(\d+\.?\d*)%?\s+(?:\|)?\s*(-?\d+\.?\d*)\s+(?:\|)?\s*(-?\d+\.?\d*)\s+(?:\|)?\s*(-?\d+\.?\d*)\s+(?:\|)?\s*(-?\d+\.?\d*)\s+(?:\|)?\s*([+-]?\d+\.?\d*)%?\s+(?:\|)?\s*(\d+\/\d+\/\d+)/i
-    );
-    
-    if (optionMatch) {
-      const optionData: OptionData = {
-        strike: parseFloat(optionMatch[1]),
-        type: optionMatch[2] as 'Call' | 'Put',
-        latest: optionMatch[3],
-        iv: parseFloat(optionMatch[4]),
-        delta: parseFloat(optionMatch[5]),
-        gamma: parseFloat(optionMatch[6]),
-        theta: parseFloat(optionMatch[7]),
-        vega: parseFloat(optionMatch[8]),
-        ivSkew: parseFloat(optionMatch[9]),
-        lastTrade: optionMatch[10],
-      };
-      
-      if (optionData.type === 'Call') {
-        calls.push(optionData);
-      } else {
-        puts.push(optionData);
-      }
+    // Skip header row labels
+    if (['Strike', 'Type', 'Latest', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'IV Skew', 'Last Trade', 'Links'].includes(line)) {
       continue;
     }
     
-    // Alternative parsing - look for simpler numeric rows
-    const numbers = line.match(/\d+\.?\d*/g);
-    if (numbers && numbers.length >= 8) {
-      const typeMatch = line.match(/\b(Call|Put)\b/i);
-      if (typeMatch) {
-        try {
-          const optionData: OptionData = {
-            strike: parseFloat(numbers[0]),
-            type: typeMatch[1] as 'Call' | 'Put',
-            latest: numbers[1] + 's',
-            iv: parseFloat(numbers[2]),
-            delta: parseFloat(numbers[3]),
-            gamma: parseFloat(numbers[4]),
-            theta: -Math.abs(parseFloat(numbers[5])),
-            vega: parseFloat(numbers[6]),
-            ivSkew: parseFloat(numbers[7]) || 0,
-            lastTrade: numbers[8] ? `${numbers[8]}/${numbers[9] || '01'}/${numbers[10] || '25'}` : new Date().toLocaleDateString('en-US'),
+    // Skip loading indicators and other non-data
+    if (line.includes('Please wait') || line.includes('throbber') || line.startsWith('![')) {
+      continue;
+    }
+    
+    // Only process when in a data section
+    if (!inCallsSection && !inPutsSection) {
+      continue;
+    }
+    
+    // Check if this is a strike price (number between 1 and 10000)
+    const strikeMatch = line.match(/^(\d+\.?\d*)$/);
+    if (strikeMatch) {
+      const potentialStrike = parseFloat(strikeMatch[1]);
+      // Validate it looks like a strike price (reasonable range)
+      if (potentialStrike >= 1 && potentialStrike <= 10000) {
+        // If we have a complete option, save it
+        if (currentOption.strike && currentOption.type) {
+          const option: OptionData = {
+            strike: currentOption.strike,
+            type: currentOption.type,
+            latest: currentOption.latest || '0.00',
+            iv: currentOption.iv || 0,
+            delta: currentOption.delta || 0,
+            gamma: currentOption.gamma || 0,
+            theta: currentOption.theta || 0,
+            vega: currentOption.vega || 0,
+            ivSkew: currentOption.ivSkew || 0,
+            lastTrade: currentOption.lastTrade || '',
           };
           
-          if (optionData.strike > 0 && optionData.iv > 0 && optionData.iv < 200) {
-            if (optionData.type === 'Call') {
-              calls.push(optionData);
-            } else {
-              puts.push(optionData);
-            }
+          if (inCallsSection && option.type === 'Call') {
+            calls.push(option);
+          } else if (inPutsSection && option.type === 'Put') {
+            puts.push(option);
           }
-        } catch (e) {
-          // Skip invalid rows
         }
+        
+        // Start new option
+        currentOption = { strike: potentialStrike };
+        fieldIndex = 0;
+        continue;
       }
     }
-  }
-  
-  // If we couldn't parse structured data, try to extract from table-like patterns
-  if (calls.length === 0 && puts.length === 0) {
-    // Look for table rows in the format: number Call/Put number% number ...
-    const tablePattern = /(\d+\.?\d*)\s+(Call|Put)\s+[\d.]+s?\s+(\d+\.?\d*)%/gi;
-    let match;
     
-    while ((match = tablePattern.exec(markdown)) !== null) {
-      const strike = parseFloat(match[1]);
-      const type = match[2] as 'Call' | 'Put';
-      const iv = parseFloat(match[3]);
+    // Check if this is Call or Put
+    if (line === 'Call' || line === 'Put') {
+      currentOption.type = line as 'Call' | 'Put';
+      fieldIndex = 0;
+      continue;
+    }
+    
+    // If we have a strike and type, collect the remaining fields
+    if (currentOption.strike && currentOption.type && fieldIndex < fieldNames.length) {
+      const fieldName = fieldNames[fieldIndex];
       
-      const optionData: OptionData = {
-        strike,
-        type,
-        latest: '0.00s',
-        iv,
-        delta: type === 'Call' ? 0.5 : -0.5,
-        gamma: 0.05,
-        theta: -0.03,
-        vega: 0.04,
-        ivSkew: 0,
-        lastTrade: new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: '2-digit' }),
-      };
-      
-      if (type === 'Call') {
-        calls.push(optionData);
-      } else {
-        puts.push(optionData);
+      switch (fieldName) {
+        case 'latest':
+          currentOption.latest = line.replace(/[^\d.s]/g, '') || line;
+          break;
+        case 'iv':
+          currentOption.iv = parseFloat(line.replace('%', '')) || 0;
+          break;
+        case 'delta':
+          currentOption.delta = parseFloat(line) || 0;
+          break;
+        case 'gamma':
+          currentOption.gamma = parseFloat(line) || 0;
+          break;
+        case 'theta':
+          currentOption.theta = parseFloat(line) || 0;
+          break;
+        case 'vega':
+          currentOption.vega = parseFloat(line) || 0;
+          break;
+        case 'ivSkew':
+          currentOption.ivSkew = parseFloat(line.replace('%', '').replace('+', '')) || 0;
+          if (line.startsWith('-')) {
+            currentOption.ivSkew = -Math.abs(currentOption.ivSkew);
+          }
+          break;
+        case 'lastTrade':
+          currentOption.lastTrade = line;
+          break;
       }
+      
+      fieldIndex++;
     }
   }
   
-  // Calculate average IV if not found in header
-  if (impliedVolatility === 0 && calls.length > 0) {
-    const allOptions = [...calls, ...puts];
-    impliedVolatility = allOptions.reduce((sum, opt) => sum + opt.iv, 0) / allOptions.length;
+  // Don't forget to save the last option
+  if (currentOption.strike && currentOption.type) {
+    const option: OptionData = {
+      strike: currentOption.strike,
+      type: currentOption.type,
+      latest: currentOption.latest || '0.00',
+      iv: currentOption.iv || 0,
+      delta: currentOption.delta || 0,
+      gamma: currentOption.gamma || 0,
+      theta: currentOption.theta || 0,
+      vega: currentOption.vega || 0,
+      ivSkew: currentOption.ivSkew || 0,
+      lastTrade: currentOption.lastTrade || '',
+    };
+    
+    if (inCallsSection && option.type === 'Call') {
+      calls.push(option);
+    } else if (inPutsSection && option.type === 'Put') {
+      puts.push(option);
+    }
   }
-  
+
+  console.log(`Final count - Calls: ${calls.length}, Puts: ${puts.length}`);
+
   return {
     success: true,
     symbol,
