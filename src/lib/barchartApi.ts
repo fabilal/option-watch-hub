@@ -126,10 +126,18 @@ export async function fetchCategorySymbols(category: string): Promise<CommodityS
 
 function getExchangeForSymbol(symbol: string, category: string): string {
   const exchanges: Record<string, string> = {
+    // Energies
     CL: 'NYMEX', HO: 'NYMEX', RB: 'NYMEX', NG: 'NYMEX', QA: 'NYMEX',
-    ZC: 'CBOT', ZS: 'CBOT', ZM: 'CBOT', ZL: 'CBOT', ZW: 'CBOT', ZO: 'CBOT',
+    QM: 'NYMEX', QG: 'NYMEX', MCL: 'NYMEX', BZ: 'NYMEX', QH: 'NYMEX', QU: 'NYMEX',
+    // Grains
+    ZC: 'CBOT', ZS: 'CBOT', ZM: 'CBOT', ZL: 'CBOT', ZW: 'CBOT', ZO: 'CBOT', ZR: 'CBOT',
+    KE: 'KCBT', MWE: 'MGEX', XC: 'CBOT', XW: 'CBOT', XK: 'CBOT',
+    // Metals
     GC: 'COMEX', SI: 'COMEX', HG: 'COMEX', PA: 'NYMEX', PL: 'NYMEX',
-    CT: 'ICE', KC: 'ICE', SB: 'ICE', CC: 'ICE', OJ: 'ICE',
+    MGC: 'COMEX', SIL: 'COMEX', QO: 'COMEX', QI: 'COMEX', QC: 'COMEX', ALI: 'COMEX', MHG: 'COMEX',
+    // Softs/Livestock
+    CT: 'ICE', KC: 'ICE', SB: 'ICE', CC: 'ICE', OJ: 'ICE', LBS: 'CME',
+    LE: 'CME', GF: 'CME', HE: 'CME', DC: 'CME', GDK: 'CME',
   };
   
   if (exchanges[symbol]) return exchanges[symbol];
@@ -146,10 +154,18 @@ function getExchangeForSymbol(symbol: string, category: string): string {
 
 function getOptionPointValue(symbol: string): number {
   const values: Record<string, number> = {
+    // Energies
     CL: 1000, HO: 42000, RB: 42000, NG: 10000, QA: 1000,
-    ZC: 50, ZS: 50, ZM: 100, ZL: 600, ZW: 50,
+    QM: 500, QG: 2500, MCL: 100, BZ: 1000, QH: 10500, QU: 10500,
+    // Grains
+    ZC: 50, ZS: 50, ZM: 100, ZL: 600, ZW: 50, ZO: 50, ZR: 20,
+    KE: 50, MWE: 50, XC: 10, XW: 10, XK: 10,
+    // Metals
     GC: 100, SI: 5000, HG: 25000, PA: 100, PL: 50,
-    CT: 500, KC: 375, SB: 1120, CC: 10, OJ: 150,
+    MGC: 10, SIL: 1000, QO: 50, QI: 2500, QC: 6250, ALI: 25000, MHG: 2500,
+    // Softs/Livestock
+    CT: 500, KC: 375, SB: 1120, CC: 10, OJ: 150, LBS: 110,
+    LE: 400, GF: 500, HE: 400, DC: 2000, GDK: 2000,
   };
   
   return values[symbol] || 1000;
