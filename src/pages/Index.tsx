@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { CategorySelector } from "@/components/CategorySelector";
 import { SymbolSelector } from "@/components/SymbolSelector";
@@ -39,7 +39,7 @@ export default function Index() {
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const maturities = generateMaturities();
+  const maturities = useMemo(() => generateMaturities(), []);
 
   // Load symbols when category changes
   useEffect(() => {
@@ -87,7 +87,15 @@ export default function Index() {
         const candidates = maturities.slice(Math.max(0, startIdx + 1), startIdx + 7);
 
         for (const candidate of candidates) {
-          const candidateData = await fetchOptionsData(symbol, candidate);
+          let candidateData: OptionsChain | null = null;
+
+          try {
+            candidateData = await fetchOptionsData(symbol, candidate);
+          } catch (e) {
+            // Ne pas enchaîner les maturités si une erreur backend survient (ex: rate limit)
+            throw e;
+          }
+
           if (!candidateData) continue;
 
           const ok =

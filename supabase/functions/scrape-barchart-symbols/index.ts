@@ -14,6 +14,16 @@ interface FuturesSymbol {
   volume: string;
 }
 
+type SymbolsCacheEntry = {
+  expiresAt: number;
+  data: { success: boolean; category: string; symbols: FuturesSymbol[]; error?: string; code?: 'RATE_LIMIT' | 'SCRAPE_FAILED'; retryAfterSeconds?: number };
+};
+
+const SYMBOLS_CACHE_TTL_MS = 10 * 60_000; // 10 minutes
+const SYMBOLS_NEGATIVE_CACHE_TTL_MS = 30_000;
+const symbolsCache = new Map<string, SymbolsCacheEntry>();
+const symbolsInflight = new Map<string, Promise<SymbolsCacheEntry['data']>>();
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -56,60 +66,127 @@ serve(async (req) => {
     console.log(`Scraping symbols for category: ${category}`);
     console.log(`URL: ${url}`);
 
-    const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['markdown'],
-        onlyMainContent: false,
-        waitFor: 3000,
-      }),
-    });
-
-    const scrapeData = await scrapeResponse.json();
-
-    if (!scrapeResponse.ok || !scrapeData.success) {
-      console.error('Firecrawl scrape error:', scrapeData);
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: scrapeData.error || `Failed to scrape Barchart ${category} page` 
-        }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    const cacheKey = category.toLowerCase();
+    const cached = getFromCache(symbolsCache, cacheKey);
+    if (cached) {
+      console.log(`Cache hit for symbols: ${cacheKey}`);
+      return new Response(JSON.stringify(cached), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
-    console.log('Scrape successful, parsing symbols...');
+    const existingPromise = symbolsInflight.get(cacheKey);
+    const isOwner = !existingPromise;
 
-    const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-    const symbols = parseSymbolsFromContent(markdown, category);
+    const workPromise =
+      existingPromise ??
+      (async (): Promise<SymbolsCacheEntry['data']> => {
+        const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            url,
+            formats: ['markdown'],
+            onlyMainContent: false,
+            waitFor: 3000,
+          }),
+        });
 
-    console.log(`Parsed ${symbols.length} symbols for ${category}`);
+        const scrapeData = await scrapeResponse.json();
+
+        if (!scrapeResponse.ok || !scrapeData.success) {
+          const msg: string | undefined = scrapeData?.error;
+          const isRateLimit = isRateLimitError(msg);
+          const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? undefined : undefined;
+
+          console.error('Firecrawl scrape error:', scrapeData);
+
+          return {
+            success: false,
+            category,
+            symbols: [],
+            code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
+            retryAfterSeconds,
+            error: msg || `Failed to scrape Barchart ${category} page`,
+          };
+        }
+
+        console.log('Scrape successful, parsing symbols...');
+
+        const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
+        const symbols = parseSymbolsFromContent(markdown, category);
+
+        console.log(`Parsed ${symbols.length} symbols for ${category}`);
+
+        return {
+          success: true,
+          category,
+          symbols,
+        };
+      })();
+
+    if (isOwner) {
+      symbolsInflight.set(cacheKey, workPromise);
+    }
+
+    try {
+      const payload = await workPromise;
+
+      symbolsCache.set(cacheKey, {
+        expiresAt: Date.now() + (payload.success ? SYMBOLS_CACHE_TTL_MS : SYMBOLS_NEGATIVE_CACHE_TTL_MS),
+        data: payload,
+      });
+
+      return new Response(JSON.stringify(payload), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    } finally {
+      if (isOwner) {
+        symbolsInflight.delete(cacheKey);
+      }
+    }
+
+  } catch (error) {
+    // IMPORTANT: always return 200 so the client can read the payload
+    console.error('Error in scrape-barchart-symbols:', error);
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
 
     return new Response(
       JSON.stringify({
-        success: true,
-        category,
-        symbols,
+        success: false,
+        category: '',
+        symbols: [],
+        code: 'SCRAPE_FAILED',
+        error: errorMessage,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
-
-  } catch (error) {
-    console.error('Error in scrape-barchart-symbols:', error);
-    return new Response(
-      JSON.stringify({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'An unexpected error occurred' 
-      }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
   }
 });
+
+function getFromCache<T>(cache: Map<string, { expiresAt: number; data: T }>, key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function isRateLimitError(message?: string): boolean {
+  return !!message && message.toLowerCase().includes('rate limit');
+}
+
+function extractRetryAfterSeconds(message?: string): number | null {
+  if (!message) return null;
+  const match = message.match(/retry after\s*(\d+)s/i) || message.match(/after\s*(\d+)s/i);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
 
 function parseSymbolsFromContent(markdown: string, category: string): FuturesSymbol[] {
   const symbols: FuturesSymbol[] = [];

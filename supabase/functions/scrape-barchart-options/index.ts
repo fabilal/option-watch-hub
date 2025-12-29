@@ -30,7 +30,19 @@ interface OptionsChainResponse {
   calls: OptionData[];
   puts: OptionData[];
   error?: string;
+  code?: 'RATE_LIMIT' | 'SCRAPE_FAILED';
+  retryAfterSeconds?: number;
 }
+
+type OptionsCacheEntry = {
+  expiresAt: number;
+  data: OptionsChainResponse;
+};
+
+const OPTIONS_CACHE_TTL_MS = 30_000;
+const OPTIONS_NEGATIVE_CACHE_TTL_MS = 10_000;
+const optionsCache = new Map<string, OptionsCacheEntry>();
+const optionsInflight = new Map<string, Promise<OptionsChainResponse>>();
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -57,65 +69,160 @@ serve(async (req) => {
     }
 
     const fullSymbol = `${symbol}${maturityCode}`;
+    const cacheKey = fullSymbol;
+
+    const cached = getFromCache(optionsCache, cacheKey);
+    if (cached) {
+      console.log(`Cache hit for ${cacheKey}`);
+      return new Response(JSON.stringify(cached), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     const url = `https://www.barchart.com/futures/quotes/${fullSymbol}/volatility-greeks?futuresOptionsView=merged`;
 
     console.log(`Scraping options data for: ${fullSymbol}`);
     console.log(`URL: ${url}`);
 
-    // Scrape the page using Firecrawl
-    const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['markdown'],
-        onlyMainContent: false,
-        waitFor: 5000,
-      }),
-    });
+    const existingPromise = optionsInflight.get(cacheKey);
+    const isOwner = !existingPromise;
 
-    const scrapeData = await scrapeResponse.json();
+    const workPromise =
+      existingPromise ??
+      (async (): Promise<OptionsChainResponse> => {
+        // Scrape the page using Firecrawl
+        const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            url,
+            formats: ['markdown'],
+            onlyMainContent: false,
+            waitFor: 5000,
+          }),
+        });
 
-    if (!scrapeResponse.ok || !scrapeData.success) {
-      console.error('Firecrawl scrape error:', scrapeData);
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: scrapeData.error || `Failed to scrape Barchart page` 
-        }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+        const scrapeData = await scrapeResponse.json();
+
+        if (!scrapeResponse.ok || !scrapeData.success) {
+          const msg: string | undefined = scrapeData?.error;
+          const isRateLimit = isRateLimitError(msg);
+          const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? undefined : undefined;
+
+          console.error('Firecrawl scrape error:', scrapeData);
+
+          return {
+            success: false,
+            symbol: fullSymbol,
+            name: name || fullSymbol,
+            maturity: '',
+            daysToExpiration: 0,
+            impliedVolatility: 0,
+            priceOfOptionPoint: optionPointValue || 1000,
+            calls: [],
+            puts: [],
+            code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
+            retryAfterSeconds,
+            error: msg || `Failed to scrape Barchart page`,
+          };
+        }
+
+        console.log('Scrape successful, parsing options data...');
+
+        const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
+        console.log(`Markdown length: ${markdown.length}`);
+
+    } catch (error) {
+      console.error('Error in scrape-barchart-options:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to scrape options data';
+      return {
+        success: false,
+        symbol,
+        name: name || symbol,
+        maturity: '',
+        daysToExpiration: 0,
+        impliedVolatility: 0,
+        priceOfOptionPoint: optionPointValue || 1000,
+        calls: [],
+        puts: [],
+        code: 'SCRAPE_FAILED',
+        error: errorMessage,
+      };
+    }
+  })();
+
+    if (isOwner) {
+      optionsInflight.set(cacheKey, workPromise);
     }
 
-    console.log('Scrape successful, parsing options data...');
+    try {
+      const parsedData = await workPromise;
 
-    const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-    console.log(`Markdown length: ${markdown.length}`);
+      console.log(`Parsed ${parsedData.calls.length} calls and ${parsedData.puts.length} puts`);
 
-    // Parse the markdown content
-    const parsedData = parseOptionsFromMarkdown(markdown, fullSymbol, name, optionPointValue);
+      // Cache (also cache short-lived errors to avoid hammering on rate limits)
+      optionsCache.set(cacheKey, {
+        expiresAt: Date.now() + (parsedData.success ? OPTIONS_CACHE_TTL_MS : OPTIONS_NEGATIVE_CACHE_TTL_MS),
+        data: parsedData,
+      });
 
-    console.log(`Parsed ${parsedData.calls.length} calls and ${parsedData.puts.length} puts`);
-
-    return new Response(
-      JSON.stringify(parsedData),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+      return new Response(JSON.stringify(parsedData), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    } finally {
+      if (isOwner) {
+        optionsInflight.delete(cacheKey);
+      }
+    }
 
   } catch (error) {
+    // IMPORTANT: always return 200 so the client can read the payload (avoid "non-2xx" generic errors)
     console.error('Error in scrape-barchart-options:', error);
-    return new Response(
-      JSON.stringify({ 
-        success: false, 
-        error: error instanceof Error ? error.message : 'An unexpected error occurred' 
-      }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+
+    const payload: OptionsChainResponse = {
+      success: false,
+      symbol: '',
+      name: '',
+      maturity: '',
+      daysToExpiration: 0,
+      impliedVolatility: 0,
+      priceOfOptionPoint: 1000,
+      calls: [],
+      puts: [],
+      code: 'SCRAPE_FAILED',
+      error: errorMessage,
+    };
+
+    return new Response(JSON.stringify(payload), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
   }
 });
+
+function getFromCache<T>(cache: Map<string, { expiresAt: number; data: T }>, key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function isRateLimitError(message?: string): boolean {
+  return !!message && message.toLowerCase().includes('rate limit');
+}
+
+function extractRetryAfterSeconds(message?: string): number | null {
+  if (!message) return null;
+  const match = message.match(/retry after\s*(\d+)s/i) || message.match(/after\s*(\d+)s/i);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
 
 function parseOptionsFromMarkdown(
   markdown: string,
