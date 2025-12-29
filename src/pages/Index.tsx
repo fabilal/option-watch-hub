@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Header } from "@/components/Header";
 import { CategorySelector } from "@/components/CategorySelector";
 import { SymbolSelector } from "@/components/SymbolSelector";
@@ -24,6 +24,8 @@ import { useToast } from "@/hooks/use-toast";
 
 export default function Index() {
   const { toast } = useToast();
+  const skipNextLoadRef = useRef(false);
+
   const [category, setCategory] = useState<CommodityCategory>("energies");
   const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
   const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
@@ -65,9 +67,6 @@ export default function Index() {
     loadSymbols();
   }, [category]);
 
-  // Note: maturities are set in initial state now
-
-  // Load options data when symbol or maturity changes
   const loadOptionsData = useCallback(async () => {
     if (!symbol || !maturity) return;
 
@@ -76,23 +75,52 @@ export default function Index() {
 
     try {
       const data = await fetchOptionsData(symbol, maturity);
-      
-      if (data) {
-        setOptionsData(data);
-        
-        if (data.calls.length === 0 && data.puts.length === 0) {
-          toast({
-            title: "Données limitées",
-            description: "Aucune donnée d'options n'a été trouvée pour cette combinaison symbole/maturité.",
-            variant: "destructive",
-          });
-        } else {
-          toast({
-            title: "Données chargées",
-            description: `${data.calls.length} calls et ${data.puts.length} puts pour ${symbol.name}`,
-          });
+      if (!data) return;
+
+      const hasAnyMarketData =
+        data.calls.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00')) ||
+        data.puts.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00'));
+
+      // If no data, try the next maturities automatically (common for grains/softs where only some months have options)
+      if (!hasAnyMarketData) {
+        const startIdx = maturities.findIndex((m) => m.code === maturity.code);
+        const candidates = maturities.slice(Math.max(0, startIdx + 1), startIdx + 7);
+
+        for (const candidate of candidates) {
+          const candidateData = await fetchOptionsData(symbol, candidate);
+          if (!candidateData) continue;
+
+          const ok =
+            candidateData.calls.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00')) ||
+            candidateData.puts.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00'));
+
+          if (ok) {
+            skipNextLoadRef.current = true;
+            setMaturity(candidate);
+            setOptionsData(candidateData);
+            toast({
+              title: "Maturité ajustée",
+              description: `Aucune donnée sur ${maturity.label}. Passage automatique à ${candidate.label}.`,
+            });
+            return;
+          }
         }
+
+        // No candidate worked
+        setOptionsData(data);
+        toast({
+          title: "Données limitées",
+          description: "Aucune donnée d'options n'a été trouvée pour cette combinaison symbole/maturité.",
+          variant: "destructive",
+        });
+        return;
       }
+
+      setOptionsData(data);
+      toast({
+        title: "Données chargées",
+        description: `${data.calls.length} calls et ${data.puts.length} puts pour ${symbol.name}`,
+      });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Erreur lors du chargement des données';
       setError(errorMessage);
@@ -105,13 +133,16 @@ export default function Index() {
     } finally {
       setIsLoading(false);
     }
-  }, [symbol, maturity, toast]);
+  }, [symbol, maturity, maturities, toast]);
 
   // Trigger data load when symbol or maturity changes
   useEffect(() => {
-    if (symbol && maturity) {
-      loadOptionsData();
+    if (!symbol || !maturity) return;
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false;
+      return;
     }
+    loadOptionsData();
   }, [symbol, maturity, loadOptionsData]);
 
   const handleRefresh = () => {
