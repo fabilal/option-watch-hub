@@ -76,44 +76,49 @@ export const COMMODITY_SYMBOLS: Record<CommodityCategory, CommoditySymbol[]> = {
   ],
 };
 
-// Month codes for futures contracts
-const MONTH_CODES: Record<string, string> = {
-  F: 'Jan',
-  G: 'Feb',
-  H: 'Mar',
-  J: 'Apr',
-  K: 'May',
-  M: 'Jun',
-  N: 'Jul',
-  Q: 'Aug',
-  U: 'Sep',
-  V: 'Oct',
-  X: 'Nov',
-  Z: 'Dec',
-};
+// Month codes for futures contracts with correct month indices
+const MONTH_CODES: { code: string; name: string; monthIndex: number }[] = [
+  { code: 'F', name: 'Jan', monthIndex: 0 },
+  { code: 'G', name: 'Feb', monthIndex: 1 },
+  { code: 'H', name: 'Mar', monthIndex: 2 },
+  { code: 'J', name: 'Apr', monthIndex: 3 },
+  { code: 'K', name: 'May', monthIndex: 4 },
+  { code: 'M', name: 'Jun', monthIndex: 5 },
+  { code: 'N', name: 'Jul', monthIndex: 6 },
+  { code: 'Q', name: 'Aug', monthIndex: 7 },
+  { code: 'U', name: 'Sep', monthIndex: 8 },
+  { code: 'V', name: 'Oct', monthIndex: 9 },
+  { code: 'X', name: 'Nov', monthIndex: 10 },
+  { code: 'Z', name: 'Dec', monthIndex: 11 },
+];
 
-// Generate maturities for the next 2 years
+// Generate maturities for the next 2 years, starting from next month
 export function generateMaturities(): Maturity[] {
   const maturities: Maturity[] = [];
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
+  const currentMonth = currentDate.getMonth();
+  
+  // Start from next month to ensure we get contracts with active options
+  // Options typically expire before the contract month
+  const minExpirationDate = new Date(currentYear, currentMonth + 2, 1);
   
   for (let yearOffset = 0; yearOffset < 3; yearOffset++) {
     const year = currentYear + yearOffset;
     const yearSuffix = year.toString().slice(-2);
     
-    Object.entries(MONTH_CODES).forEach(([code, month]) => {
-      const monthIndex = Object.keys(MONTH_CODES).indexOf(code);
-      const expirationDate = new Date(year, monthIndex, 14); // Approximate expiration
+    for (const { code, name, monthIndex } of MONTH_CODES) {
+      // Expiration is typically mid-month before the contract month
+      const expirationDate = new Date(year, monthIndex, 14);
       
-      if (expirationDate > currentDate) {
+      if (expirationDate >= minExpirationDate) {
         maturities.push({
           code: `${code}${yearSuffix}`,
-          label: `${month} ${year}`,
+          label: `${name} ${year}`,
           expiration: expirationDate.toISOString().split('T')[0],
         });
       }
-    });
+    }
   }
   
   return maturities.slice(0, 24); // Limit to 24 maturities
