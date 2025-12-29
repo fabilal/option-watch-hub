@@ -198,38 +198,63 @@ function parseOptionsFromMarkdown(
       continue;
     }
     
-    // Check if this is a strike price (number between 1 and 10000)
+    // Check if this is a strike price.
+    // IMPORTANT: latest prices (e.g. "5.33") are also numeric-only, so we validate by peeking ahead:
+    // a real strike is followed by "Call" or "Put".
     const strikeMatch = line.match(/^(\d+\.?\d*)$/);
     if (strikeMatch) {
       const potentialStrike = parseFloat(strikeMatch[1]);
-      // Validate it looks like a strike price (reasonable range)
       if (potentialStrike >= 1 && potentialStrike <= 10000) {
-        // If we have a complete option, save it
-        if (currentOption.strike && currentOption.type) {
-          const option: OptionData = {
-            strike: currentOption.strike,
-            type: currentOption.type,
-            latest: currentOption.latest || '0.00',
-            iv: currentOption.iv || 0,
-            delta: currentOption.delta || 0,
-            gamma: currentOption.gamma || 0,
-            theta: currentOption.theta || 0,
-            vega: currentOption.vega || 0,
-            ivSkew: currentOption.ivSkew || 0,
-            lastTrade: currentOption.lastTrade || '',
-          };
-          
-          if (inCallsSection && option.type === 'Call') {
-            calls.push(option);
-          } else if (inPutsSection && option.type === 'Put') {
-            puts.push(option);
+        // Peek next meaningful line
+        let nextMeaningful: string | undefined;
+        for (let j = i + 1; j < lines.length; j++) {
+          const candidate = lines[j];
+
+          // Skip obvious non-data / noise
+          if (
+            ['Strike', 'Type', 'Latest', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'IV Skew', 'Last Trade', 'Links'].includes(candidate) ||
+            candidate.includes('Please wait') ||
+            candidate.includes('throbber') ||
+            candidate.startsWith('![') ||
+            candidate === 'false' ||
+            candidate.startsWith('[')
+          ) {
+            continue;
           }
+
+          nextMeaningful = candidate;
+          break;
         }
-        
-        // Start new option
-        currentOption = { strike: potentialStrike };
-        fieldIndex = 0;
-        continue;
+
+        // Only treat as strike if next meaningful token is Call/Put
+        if (nextMeaningful === 'Call' || nextMeaningful === 'Put') {
+          // If we have a complete option, save it
+          if (currentOption.strike && currentOption.type) {
+            const option: OptionData = {
+              strike: currentOption.strike,
+              type: currentOption.type,
+              latest: currentOption.latest || '0.00',
+              iv: currentOption.iv || 0,
+              delta: currentOption.delta || 0,
+              gamma: currentOption.gamma || 0,
+              theta: currentOption.theta || 0,
+              vega: currentOption.vega || 0,
+              ivSkew: currentOption.ivSkew || 0,
+              lastTrade: currentOption.lastTrade || '',
+            };
+
+            if (inCallsSection && option.type === 'Call') {
+              calls.push(option);
+            } else if (inPutsSection && option.type === 'Put') {
+              puts.push(option);
+            }
+          }
+
+          // Start new option
+          currentOption = { strike: potentialStrike };
+          fieldIndex = 0;
+          continue;
+        }
       }
     }
     
