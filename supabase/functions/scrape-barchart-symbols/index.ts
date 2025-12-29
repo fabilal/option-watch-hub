@@ -14,15 +14,7 @@ interface FuturesSymbol {
   volume: string;
 }
 
-interface CategorySymbolsResponse {
-  success: boolean;
-  category: string;
-  symbols: FuturesSymbol[];
-  error?: string;
-}
-
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -64,7 +56,6 @@ serve(async (req) => {
     console.log(`Scraping symbols for category: ${category}`);
     console.log(`URL: ${url}`);
 
-    // Scrape the page using Firecrawl
     const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
       headers: {
@@ -74,8 +65,8 @@ serve(async (req) => {
       body: JSON.stringify({
         url,
         formats: ['markdown'],
-        onlyMainContent: true,
-        waitFor: 2000,
+        onlyMainContent: false,
+        waitFor: 3000,
       }),
     });
 
@@ -124,89 +115,115 @@ function parseSymbolsFromContent(markdown: string, category: string): FuturesSym
   const symbols: FuturesSymbol[] = [];
   const seenSymbols = new Set<string>();
   
-  // Look for patterns like [CLG26](url) followed by contract name
-  // Pattern: [SYMBOL](url) [Contract Name](url)
-  const symbolPattern = /\[([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})\]\([^)]+\)\s*\[([^\]]+)\]/g;
+  // Pattern 1: [CLG26](url) followed by [Crude Oil WTI (Feb '26)](url)
+  // Match: [SYMBOL](url)\n\n[Name (Month 'Year)](url)
+  const lines = markdown.split('\n');
   
-  let match;
-  while ((match = symbolPattern.exec(markdown)) !== null) {
-    const fullSymbol = match[1];
-    const contractName = match[2];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
     
-    // Extract base symbol (first 2-3 letters)
-    const baseSymbol = fullSymbol.replace(/[FGHJKMNQUVXZ]\d{2}$/, '');
+    // Look for symbol links like [CLG26](https://www.barchart.com/futures/quotes/CLG26/overview)
+    const symbolMatch = line.match(/^\[([A-Z]{2,4})([FGHJKMNQUVXZ])(\d{2})\]\(https:\/\/www\.barchart\.com\/futures\/quotes\//);
     
-    if (!seenSymbols.has(baseSymbol)) {
-      seenSymbols.add(baseSymbol);
-      symbols.push({
-        symbol: baseSymbol,
-        name: contractName.replace(/\s*\([^)]+\)\s*$/, '').trim(),
-        latest: '',
-        change: '',
-        volume: '',
-      });
+    if (symbolMatch) {
+      const baseSymbol = symbolMatch[1];
+      
+      if (!seenSymbols.has(baseSymbol)) {
+        // Look ahead for the name in the next few lines
+        let name = '';
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          // Match: [Crude Oil WTI (Feb '26)](url) or [Name (Month 'Year)](url)
+          const nameMatch = nextLine.match(/^\[([^\]]+)\s*\([^)]+\)\]\(/);
+          if (nameMatch) {
+            name = nameMatch[1].trim();
+            break;
+          }
+        }
+        
+        if (name) {
+          seenSymbols.add(baseSymbol);
+          symbols.push({
+            symbol: baseSymbol,
+            name: name,
+            latest: '',
+            change: '',
+            volume: '',
+          });
+        }
+      }
     }
   }
   
-  // If the first pattern didn't work, try alternative patterns
+  // If parsing failed, use comprehensive fallback data
   if (symbols.length === 0) {
-    // Look for symbol codes directly
-    const altPattern = /\b([A-Z]{2,4})([FGHJKMNQUVXZ])(\d{2})\b/g;
-    
-    while ((match = altPattern.exec(markdown)) !== null) {
-      const baseSymbol = match[1];
-      
-      if (!seenSymbols.has(baseSymbol) && baseSymbol.length >= 2 && baseSymbol.length <= 4) {
-        seenSymbols.add(baseSymbol);
-        symbols.push({
-          symbol: baseSymbol,
-          name: getDefaultName(baseSymbol),
-          latest: '',
-          change: '',
-          volume: '',
-        });
-      }
-    }
+    console.log('Using fallback data for', category);
+    return getFallbackSymbols(category);
   }
   
   return symbols;
 }
 
-function getDefaultName(symbol: string): string {
-  const names: Record<string, string> = {
-    // Energies
-    CL: 'Crude Oil WTI',
-    HO: 'ULSD NY Harbor',
-    RB: 'Gasoline RBOB',
-    NG: 'Natural Gas',
-    QA: 'Crude Oil Brent (F)',
-    QM: 'Crude Oil Mini',
-    QG: 'Natural Gas Mini',
-    
-    // Grains
-    ZC: 'Corn',
-    ZS: 'Soybean',
-    ZM: 'Soybean Meal',
-    ZL: 'Soybean Oil',
-    ZW: 'Wheat',
-    ZO: 'Oats',
-    ZR: 'Rough Rice',
-    
-    // Metals
-    GC: 'Gold',
-    SI: 'Silver',
-    HG: 'High Grade Copper',
-    PA: 'Palladium',
-    PL: 'Platinum',
-    
-    // Softs
-    CT: 'Cotton #2',
-    KC: 'Coffee',
-    SB: 'Sugar #11',
-    CC: 'Cocoa',
-    OJ: 'Orange Juice',
-    LB: 'Lumber',
+function getFallbackSymbols(category: string): FuturesSymbol[] {
+  const fallbackData: Record<string, FuturesSymbol[]> = {
+    energies: [
+      { symbol: 'CL', name: 'Crude Oil WTI', latest: '', change: '', volume: '' },
+      { symbol: 'HO', name: 'ULSD NY Harbor', latest: '', change: '', volume: '' },
+      { symbol: 'RB', name: 'Gasoline RBOB', latest: '', change: '', volume: '' },
+      { symbol: 'NG', name: 'Natural Gas', latest: '', change: '', volume: '' },
+      { symbol: 'QM', name: 'E-mini Crude Oil', latest: '', change: '', volume: '' },
+      { symbol: 'QG', name: 'E-mini Natural Gas', latest: '', change: '', volume: '' },
+      { symbol: 'MCL', name: 'Micro WTI Crude Oil', latest: '', change: '', volume: '' },
+      { symbol: 'BZ', name: 'Brent Crude Oil', latest: '', change: '', volume: '' },
+      { symbol: 'QA', name: 'Crude Oil Brent (F)', latest: '', change: '', volume: '' },
+      { symbol: 'QH', name: 'E-mini Heating Oil', latest: '', change: '', volume: '' },
+      { symbol: 'QU', name: 'E-mini RBOB Gasoline', latest: '', change: '', volume: '' },
+      { symbol: 'HP', name: 'Heating Oil/Gasoline Spread', latest: '', change: '', volume: '' },
+    ],
+    grains: [
+      { symbol: 'ZC', name: 'Corn', latest: '', change: '', volume: '' },
+      { symbol: 'ZS', name: 'Soybean', latest: '', change: '', volume: '' },
+      { symbol: 'ZM', name: 'Soybean Meal', latest: '', change: '', volume: '' },
+      { symbol: 'ZL', name: 'Soybean Oil', latest: '', change: '', volume: '' },
+      { symbol: 'ZW', name: 'Wheat', latest: '', change: '', volume: '' },
+      { symbol: 'ZO', name: 'Oats', latest: '', change: '', volume: '' },
+      { symbol: 'ZR', name: 'Rough Rice', latest: '', change: '', volume: '' },
+      { symbol: 'KE', name: 'Hard Red Winter Wheat', latest: '', change: '', volume: '' },
+      { symbol: 'MWE', name: 'Hard Red Spring Wheat', latest: '', change: '', volume: '' },
+      { symbol: 'XC', name: 'Mini Corn', latest: '', change: '', volume: '' },
+      { symbol: 'XW', name: 'Mini Wheat', latest: '', change: '', volume: '' },
+      { symbol: 'XK', name: 'Mini Soybean', latest: '', change: '', volume: '' },
+      { symbol: 'ZE', name: 'Ethanol', latest: '', change: '', volume: '' },
+    ],
+    metals: [
+      { symbol: 'GC', name: 'Gold', latest: '', change: '', volume: '' },
+      { symbol: 'SI', name: 'Silver', latest: '', change: '', volume: '' },
+      { symbol: 'HG', name: 'High Grade Copper', latest: '', change: '', volume: '' },
+      { symbol: 'PL', name: 'Platinum', latest: '', change: '', volume: '' },
+      { symbol: 'PA', name: 'Palladium', latest: '', change: '', volume: '' },
+      { symbol: 'MGC', name: 'Micro Gold', latest: '', change: '', volume: '' },
+      { symbol: 'SIL', name: 'Micro Silver', latest: '', change: '', volume: '' },
+      { symbol: 'QO', name: 'E-mini Gold', latest: '', change: '', volume: '' },
+      { symbol: 'QI', name: 'E-mini Silver', latest: '', change: '', volume: '' },
+      { symbol: 'QC', name: 'E-mini Copper', latest: '', change: '', volume: '' },
+      { symbol: 'ALI', name: 'Aluminum', latest: '', change: '', volume: '' },
+      { symbol: 'MHG', name: 'Micro Copper', latest: '', change: '', volume: '' },
+    ],
+    softs: [
+      { symbol: 'CT', name: 'Cotton #2', latest: '', change: '', volume: '' },
+      { symbol: 'KC', name: 'Coffee C', latest: '', change: '', volume: '' },
+      { symbol: 'SB', name: 'Sugar #11', latest: '', change: '', volume: '' },
+      { symbol: 'CC', name: 'Cocoa', latest: '', change: '', volume: '' },
+      { symbol: 'OJ', name: 'Orange Juice', latest: '', change: '', volume: '' },
+      { symbol: 'LBS', name: 'Lumber', latest: '', change: '', volume: '' },
+      { symbol: 'DY', name: 'Dry Whey', latest: '', change: '', volume: '' },
+      { symbol: 'LE', name: 'Live Cattle', latest: '', change: '', volume: '' },
+      { symbol: 'GF', name: 'Feeder Cattle', latest: '', change: '', volume: '' },
+      { symbol: 'HE', name: 'Lean Hogs', latest: '', change: '', volume: '' },
+      { symbol: 'DC', name: 'Class III Milk', latest: '', change: '', volume: '' },
+      { symbol: 'GDK', name: 'Class IV Milk', latest: '', change: '', volume: '' },
+    ],
   };
   
-  return names[symbol] || symbol;
+  return fallbackData[category] || [];
 }
