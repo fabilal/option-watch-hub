@@ -90,30 +90,56 @@ serve(async (req) => {
     const workPromise =
       existingPromise ??
       (async (): Promise<OptionsChainResponse> => {
-        // Scrape the page using Firecrawl
-        const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url,
-            formats: ['markdown'],
-            onlyMainContent: false,
-            waitFor: 5000,
-          }),
-        });
+        try {
+          // Scrape the page using Firecrawl
+          const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              url,
+              formats: ['markdown'],
+              onlyMainContent: false,
+              waitFor: 5000,
+            }),
+          });
 
-        const scrapeData = await scrapeResponse.json();
+          const scrapeData = await scrapeResponse.json();
 
-        if (!scrapeResponse.ok || !scrapeData.success) {
-          const msg: string | undefined = scrapeData?.error;
-          const isRateLimit = isRateLimitError(msg);
-          const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? undefined : undefined;
+          if (!scrapeResponse.ok || !scrapeData.success) {
+            const msg: string | undefined = scrapeData?.error;
+            const isRateLimit = isRateLimitError(msg);
+            const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? undefined : undefined;
 
-          console.error('Firecrawl scrape error:', scrapeData);
+            console.error('Firecrawl scrape error:', scrapeData);
 
+            return {
+              success: false,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
+              maturity: '',
+              daysToExpiration: 0,
+              impliedVolatility: 0,
+              priceOfOptionPoint: optionPointValue || 1000,
+              calls: [],
+              puts: [],
+              code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
+              retryAfterSeconds,
+              error: msg || `Failed to scrape Barchart page`,
+            };
+          }
+
+          console.log('Scrape successful, parsing options data...');
+
+          const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
+          console.log(`Markdown length: ${markdown.length}`);
+
+          return parseOptionsFromMarkdown(markdown, fullSymbol, name || fullSymbol, optionPointValue || 1000);
+        } catch (error) {
+          console.error('Error in scrape-barchart-options:', error);
+          const errorMessage = error instanceof Error ? error.message : 'Failed to scrape options data';
           return {
             success: false,
             symbol: fullSymbol,
@@ -124,35 +150,11 @@ serve(async (req) => {
             priceOfOptionPoint: optionPointValue || 1000,
             calls: [],
             puts: [],
-            code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
-            retryAfterSeconds,
-            error: msg || `Failed to scrape Barchart page`,
+            code: 'SCRAPE_FAILED',
+            error: errorMessage,
           };
         }
-
-        console.log('Scrape successful, parsing options data...');
-
-        const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-        console.log(`Markdown length: ${markdown.length}`);
-
-    } catch (error) {
-      console.error('Error in scrape-barchart-options:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Failed to scrape options data';
-      return {
-        success: false,
-        symbol,
-        name: name || symbol,
-        maturity: '',
-        daysToExpiration: 0,
-        impliedVolatility: 0,
-        priceOfOptionPoint: optionPointValue || 1000,
-        calls: [],
-        puts: [],
-        code: 'SCRAPE_FAILED',
-        error: errorMessage,
-      };
-    }
-  })();
+      })();
 
     if (isOwner) {
       optionsInflight.set(cacheKey, workPromise);
