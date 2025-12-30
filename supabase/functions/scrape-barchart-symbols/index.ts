@@ -232,75 +232,10 @@ function parseSymbolsFromContent(markdown: string, category: string): FuturesSym
     }
   }
   
-  // If parsing failed, use comprehensive fallback data
+  // If parsing failed, return empty (no fallback mock data)
   if (symbols.length === 0) {
-    console.log('Using fallback data for', category);
-    return getFallbackSymbols(category);
+    console.log('No symbols parsed for', category);
   }
   
   return symbols;
-}
-
-function getFallbackSymbols(category: string): FuturesSymbol[] {
-  const fallbackData: Record<string, FuturesSymbol[]> = {
-    energies: [
-      { symbol: 'CL', name: 'Crude Oil WTI', latest: '', change: '', volume: '' },
-      { symbol: 'HO', name: 'ULSD NY Harbor', latest: '', change: '', volume: '' },
-      { symbol: 'RB', name: 'Gasoline RBOB', latest: '', change: '', volume: '' },
-      { symbol: 'NG', name: 'Natural Gas', latest: '', change: '', volume: '' },
-      { symbol: 'QM', name: 'E-mini Crude Oil', latest: '', change: '', volume: '' },
-      { symbol: 'QG', name: 'E-mini Natural Gas', latest: '', change: '', volume: '' },
-      { symbol: 'MCL', name: 'Micro WTI Crude Oil', latest: '', change: '', volume: '' },
-      { symbol: 'BZ', name: 'Brent Crude Oil', latest: '', change: '', volume: '' },
-      { symbol: 'QA', name: 'Crude Oil Brent (F)', latest: '', change: '', volume: '' },
-      { symbol: 'QH', name: 'E-mini Heating Oil', latest: '', change: '', volume: '' },
-      { symbol: 'QU', name: 'E-mini RBOB Gasoline', latest: '', change: '', volume: '' },
-      { symbol: 'HP', name: 'Heating Oil/Gasoline Spread', latest: '', change: '', volume: '' },
-    ],
-    grains: [
-      { symbol: 'ZC', name: 'Corn', latest: '', change: '', volume: '' },
-      { symbol: 'ZS', name: 'Soybean', latest: '', change: '', volume: '' },
-      { symbol: 'ZM', name: 'Soybean Meal', latest: '', change: '', volume: '' },
-      { symbol: 'ZL', name: 'Soybean Oil', latest: '', change: '', volume: '' },
-      { symbol: 'ZW', name: 'Wheat', latest: '', change: '', volume: '' },
-      { symbol: 'ZO', name: 'Oats', latest: '', change: '', volume: '' },
-      { symbol: 'ZR', name: 'Rough Rice', latest: '', change: '', volume: '' },
-      { symbol: 'KE', name: 'Hard Red Winter Wheat', latest: '', change: '', volume: '' },
-      { symbol: 'MWE', name: 'Hard Red Spring Wheat', latest: '', change: '', volume: '' },
-      { symbol: 'XC', name: 'Mini Corn', latest: '', change: '', volume: '' },
-      { symbol: 'XW', name: 'Mini Wheat', latest: '', change: '', volume: '' },
-      { symbol: 'XK', name: 'Mini Soybean', latest: '', change: '', volume: '' },
-      { symbol: 'ZE', name: 'Ethanol', latest: '', change: '', volume: '' },
-    ],
-    metals: [
-      { symbol: 'GC', name: 'Gold', latest: '', change: '', volume: '' },
-      { symbol: 'SI', name: 'Silver', latest: '', change: '', volume: '' },
-      { symbol: 'HG', name: 'High Grade Copper', latest: '', change: '', volume: '' },
-      { symbol: 'PL', name: 'Platinum', latest: '', change: '', volume: '' },
-      { symbol: 'PA', name: 'Palladium', latest: '', change: '', volume: '' },
-      { symbol: 'MGC', name: 'Micro Gold', latest: '', change: '', volume: '' },
-      { symbol: 'SIL', name: 'Micro Silver', latest: '', change: '', volume: '' },
-      { symbol: 'QO', name: 'E-mini Gold', latest: '', change: '', volume: '' },
-      { symbol: 'QI', name: 'E-mini Silver', latest: '', change: '', volume: '' },
-      { symbol: 'QC', name: 'E-mini Copper', latest: '', change: '', volume: '' },
-      { symbol: 'ALI', name: 'Aluminum', latest: '', change: '', volume: '' },
-      { symbol: 'MHG', name: 'Micro Copper', latest: '', change: '', volume: '' },
-    ],
-    softs: [
-      { symbol: 'CT', name: 'Cotton #2', latest: '', change: '', volume: '' },
-      { symbol: 'KC', name: 'Coffee C', latest: '', change: '', volume: '' },
-      { symbol: 'SB', name: 'Sugar #11', latest: '', change: '', volume: '' },
-      { symbol: 'CC', name: 'Cocoa', latest: '', change: '', volume: '' },
-      { symbol: 'OJ', name: 'Orange Juice', latest: '', change: '', volume: '' },
-      { symbol: 'LBS', name: 'Lumber', latest: '', change: '', volume: '' },
-      { symbol: 'DY', name: 'Dry Whey', latest: '', change: '', volume: '' },
-      { symbol: 'LE', name: 'Live Cattle', latest: '', change: '', volume: '' },
-      { symbol: 'GF', name: 'Feeder Cattle', latest: '', change: '', volume: '' },
-      { symbol: 'HE', name: 'Lean Hogs', latest: '', change: '', volume: '' },
-      { symbol: 'DC', name: 'Class III Milk', latest: '', change: '', volume: '' },
-      { symbol: 'GDK', name: 'Class IV Milk', latest: '', change: '', volume: '' },
-    ],
-  };
-  
-  return fallbackData[category] || [];
 }
