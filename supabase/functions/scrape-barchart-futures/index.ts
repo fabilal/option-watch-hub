@@ -96,7 +96,14 @@ serve(async (req) => {
             },
             body: JSON.stringify({
               url,
-              formats: ['markdown'],
+              formats: [
+                {
+                  type: 'json',
+                  prompt:
+                    'Extract the Futures Prices table. Return JSON as {"futures":[{"contract":"","month":"","last":"","change":"","percentChange":"","open":"","high":"","low":"","volume":"","openInterest":"","time":""}]}. Only include real contract rows (e.g. CLG26).',
+                },
+                'markdown',
+              ],
               onlyMainContent: false,
               waitFor: 5000,
             }),
@@ -125,9 +132,35 @@ serve(async (req) => {
           console.log('Scrape successful, parsing futures data...');
 
           const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-          console.log(`Markdown length: ${markdown.length}`);
+          const extractedJson = scrapeData.data?.json || scrapeData.json || null;
 
-          return parseFuturesFromMarkdown(markdown, fullSymbol, name || fullSymbol);
+          console.log(`Markdown length: ${markdown.length}`);
+          console.log(`Has extracted JSON: ${!!extractedJson}`);
+
+          const jsonFutures = parseFuturesFromExtractedJson(extractedJson);
+          if (jsonFutures.length > 0) {
+            console.log(`Extracted ${jsonFutures.length} futures contracts via JSON`);
+            return {
+              success: true,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
+              futures: jsonFutures,
+            };
+          }
+
+          const parsed = parseFuturesFromMarkdown(markdown, fullSymbol, name || fullSymbol);
+          if (parsed.futures.length === 0) {
+            return {
+              success: false,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
+              futures: [],
+              code: 'SCRAPE_FAILED',
+              error: 'Aucune ligne futures détectée (structure de page non reconnue).',
+            };
+          }
+
+          return parsed;
         } catch (error) {
           console.error('Error in scrape-barchart-futures:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape futures data';
@@ -202,6 +235,48 @@ function extractRetryAfterSeconds(message?: string): number | null {
   if (!message) return null;
   const match = message.match(/retry after\s*(\d+)s/i) || message.match(/after\s*(\d+)s/i);
   return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function parseFuturesFromExtractedJson(extracted: unknown): FuturesPrice[] {
+  if (!extracted) return [];
+
+  let rows: any[] = [];
+
+  if (Array.isArray(extracted)) {
+    rows = extracted;
+  } else if (typeof extracted === 'object' && extracted) {
+    const obj: any = extracted;
+    if (Array.isArray(obj.futures)) rows = obj.futures;
+    else if (Array.isArray(obj.data)) rows = obj.data;
+    else if (Array.isArray(obj.results)) rows = obj.results;
+  }
+
+  const contractRegex = /^([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})$/;
+  const normalize = (v: unknown) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v));
+
+  const parsed = rows
+    .map((r: any): FuturesPrice => ({
+      contract: normalize(r.contract),
+      month: normalize(r.month),
+      last: normalize(r.last),
+      change: normalize(r.change),
+      percentChange: normalize(r.percentChange ?? r.pct ?? r.percent),
+      open: normalize(r.open),
+      high: normalize(r.high),
+      low: normalize(r.low),
+      volume: normalize(r.volume),
+      openInterest: normalize(r.openInterest ?? r.open_int ?? r.openInterest),
+      time: normalize(r.time),
+    }))
+    .filter((r) => contractRegex.test(r.contract));
+
+  // Deduplicate by contract
+  const seen = new Set<string>();
+  return parsed.filter((r) => {
+    if (seen.has(r.contract)) return false;
+    seen.add(r.contract);
+    return true;
+  });
 }
 
 function parseFuturesFromMarkdown(
