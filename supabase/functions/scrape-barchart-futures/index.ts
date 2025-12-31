@@ -96,14 +96,34 @@ serve(async (req) => {
             },
             body: JSON.stringify({
               url,
-              formats: [
-                {
-                  type: 'json',
-                  prompt:
-                    'Extract the Futures Prices table. Return JSON as {"futures":[{"contract":"","month":"","last":"","change":"","percentChange":"","open":"","high":"","low":"","volume":"","openInterest":"","time":""}]}. Only include real contract rows (e.g. CLG26).',
+              formats: ['markdown', 'extract'],
+              extract: {
+                prompt: 'Extract the Futures Prices table. Return JSON as {"futures":[{"contract":"","month":"","last":"","change":"","percentChange":"","open":"","high":"","low":"","volume":"","openInterest":"","time":""}]}. Only include real contract rows (e.g. CLG26).',
+                schema: {
+                  type: 'object',
+                  properties: {
+                    futures: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          contract: { type: 'string' },
+                          month: { type: 'string' },
+                          last: { type: 'string' },
+                          change: { type: 'string' },
+                          percentChange: { type: 'string' },
+                          open: { type: 'string' },
+                          high: { type: 'string' },
+                          low: { type: 'string' },
+                          volume: { type: 'string' },
+                          openInterest: { type: 'string' },
+                          time: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
                 },
-                'markdown',
-              ],
+              },
               onlyMainContent: false,
               waitFor: 5000,
             }),
@@ -132,7 +152,7 @@ serve(async (req) => {
           console.log('Scrape successful, parsing futures data...');
 
           const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-          const extractedJson = scrapeData.data?.json || scrapeData.json || null;
+          const extractedJson = scrapeData.data?.extract || scrapeData.extract || null;
 
           console.log(`Markdown length: ${markdown.length}`);
           console.log(`Has extracted JSON: ${!!extractedJson}`);
