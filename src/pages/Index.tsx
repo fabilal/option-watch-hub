@@ -157,11 +157,17 @@ export default function Index() {
       setFuturesData(data);
     } catch (err) {
       console.error('Error fetching futures:', err);
+      const msg = err instanceof Error ? err.message : "Erreur lors du chargement des prix futures";
       setFuturesData(null);
+      toast({
+        title: "Prix futures indisponibles",
+        description: msg,
+        variant: "destructive",
+      });
     } finally {
       setIsLoadingFutures(false);
     }
-  }, [symbol, maturity]);
+  }, [symbol, maturity, toast]);
 
   // Trigger data load when symbol or maturity changes
   useEffect(() => {
