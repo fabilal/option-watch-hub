@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.scrape-barchart-symbols]
 verify_jwt = false
+
+[functions.scrape-barchart-futures]
+verify_jwt = false

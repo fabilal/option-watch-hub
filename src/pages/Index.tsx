@@ -9,6 +9,7 @@ import { IVSmileChart } from "@/components/IVSmileChart";
 import { TypeToggle } from "@/components/TypeToggle";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingSkeleton } from "@/components/LoadingSkeleton";
+import { FuturesPricesTable } from "@/components/FuturesPricesTable";
 import { Download, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,8 +19,9 @@ import {
   type CommoditySymbol,
   type Maturity,
   type OptionsChain,
+  type FuturesPricesData,
 } from "@/lib/commodityData";
-import { fetchOptionsData, fetchCategorySymbols } from "@/lib/barchartApi";
+import { fetchOptionsData, fetchCategorySymbols, fetchFuturesPrices } from "@/lib/barchartApi";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Index() {
@@ -34,8 +36,10 @@ export default function Index() {
     return mats.length > 0 ? mats[0] : null;
   });
   const [optionsData, setOptionsData] = useState<OptionsChain | null>(null);
+  const [futuresData, setFuturesData] = useState<FuturesPricesData | null>(null);
   const [optionType, setOptionType] = useState<"calls" | "puts" | "all">("all");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingFutures, setIsLoadingFutures] = useState(false);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -143,6 +147,22 @@ export default function Index() {
     }
   }, [symbol, maturity, maturities, toast]);
 
+  // Load futures prices
+  const loadFuturesData = useCallback(async () => {
+    if (!symbol || !maturity) return;
+
+    setIsLoadingFutures(true);
+    try {
+      const data = await fetchFuturesPrices(symbol, maturity);
+      setFuturesData(data);
+    } catch (err) {
+      console.error('Error fetching futures:', err);
+      setFuturesData(null);
+    } finally {
+      setIsLoadingFutures(false);
+    }
+  }, [symbol, maturity]);
+
   // Trigger data load when symbol or maturity changes
   useEffect(() => {
     if (!symbol || !maturity) return;
@@ -151,10 +171,12 @@ export default function Index() {
       return;
     }
     loadOptionsData();
-  }, [symbol, maturity, loadOptionsData]);
+    loadFuturesData();
+  }, [symbol, maturity, loadOptionsData, loadFuturesData]);
 
   const handleRefresh = () => {
     loadOptionsData();
+    loadFuturesData();
   };
 
   const handleDownload = () => {
@@ -270,6 +292,9 @@ export default function Index() {
 
             {/* Stats Cards */}
             <StatsCards data={optionsData} />
+
+            {/* Futures Prices */}
+            <FuturesPricesTable data={futuresData} isLoading={isLoadingFutures} />
 
             {/* IV Smile Chart */}
             {optionsData.calls.length > 0 && (

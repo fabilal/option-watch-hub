@@ -38,6 +38,26 @@ export interface OptionsChain {
   puts: OptionData[];
 }
 
+export interface FuturesPrice {
+  contract: string;
+  month: string;
+  last: string;
+  change: string;
+  percentChange: string;
+  open: string;
+  high: string;
+  low: string;
+  volume: string;
+  openInterest: string;
+  time: string;
+}
+
+export interface FuturesPricesData {
+  symbol: string;
+  name: string;
+  futures: FuturesPrice[];
+}
+
 export const COMMODITY_CATEGORIES: Record<CommodityCategory, { label: string; icon: string }> = {
   energies: { label: 'Energies', icon: '⚡' },
   grains: { label: 'Grains', icon: '🌾' },
