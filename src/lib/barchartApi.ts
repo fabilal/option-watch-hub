@@ -4,6 +4,8 @@ import {
   type Maturity, 
   type OptionsChain,
   type OptionData,
+  type FuturesPrice,
+  type FuturesPricesData,
   COMMODITY_SYMBOLS,
 } from './commodityData';
 
@@ -37,8 +39,19 @@ interface ScrapeSymbolsResponse {
   retryAfterSeconds?: number;
 }
 
+interface ScrapeFuturesResponse {
+  success: boolean;
+  symbol: string;
+  name: string;
+  futures: FuturesPrice[];
+  error?: string;
+  code?: 'RATE_LIMIT' | 'SCRAPE_FAILED';
+  retryAfterSeconds?: number;
+}
+
 const optionsInflight = new Map<string, Promise<OptionsChain | null>>();
 const symbolsInflight = new Map<string, Promise<CommoditySymbol[]>>();
+const futuresInflight = new Map<string, Promise<FuturesPricesData | null>>();
 
 export async function fetchOptionsData(
   symbol: CommoditySymbol,
@@ -214,4 +227,61 @@ function getOptionPointValue(symbol: string): number {
   };
   
   return values[symbol] || 1000;
+}
+
+export async function fetchFuturesPrices(
+  symbol: CommoditySymbol,
+  maturity: Maturity
+): Promise<FuturesPricesData | null> {
+  const requestKey = `futures:${symbol.baseSymbol}:${maturity.code}`;
+  const existing = futuresInflight.get(requestKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    console.log(`Fetching futures prices for ${symbol.baseSymbol}${maturity.code}`);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('scrape-barchart-futures', {
+        body: {
+          symbol: symbol.baseSymbol,
+          maturityCode: maturity.code,
+          name: symbol.name,
+        },
+      });
+
+      if (error) {
+        console.error('Supabase function error:', error);
+        throw new Error(error.message);
+      }
+
+      const response = data as ScrapeFuturesResponse;
+
+      if (!response.success) {
+        if (response.code === 'RATE_LIMIT') {
+          const retry = response.retryAfterSeconds ?? 30;
+          throw new Error(`Limite de requêtes atteinte. Réessaie dans ~${retry}s.`);
+        }
+
+        console.error('Scrape failed:', response.error);
+        throw new Error(response.error || 'Failed to scrape futures data');
+      }
+
+      return {
+        symbol: response.symbol,
+        name: response.name || symbol.name,
+        futures: response.futures,
+      };
+    } catch (error) {
+      console.error('Error fetching futures data:', error);
+      throw error;
+    }
+  })();
+
+  futuresInflight.set(requestKey, promise);
+
+  try {
+    return await promise;
+  } finally {
+    futuresInflight.delete(requestKey);
+  }
 }
