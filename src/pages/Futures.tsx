@@ -1,14 +1,17 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { CategorySelector } from "@/components/CategorySelector";
 import { SymbolSelector } from "@/components/SymbolSelector";
+import { MaturitySelector } from "@/components/MaturitySelector";
 import { FuturesPricesTable } from "@/components/FuturesPricesTable";
-import { RefreshCw, AlertCircle, Loader2 } from "lucide-react";
+import { RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   COMMODITY_SYMBOLS,
+  generateMaturities,
   type CommodityCategory,
   type CommoditySymbol,
+  type Maturity,
   type FuturesPricesData,
 } from "@/lib/commodityData";
 import { fetchCategorySymbols, fetchFuturesPrices } from "@/lib/barchartApi";
@@ -20,10 +23,16 @@ export default function Futures() {
   const [category, setCategory] = useState<CommodityCategory>("energies");
   const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
   const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
+  const [maturity, setMaturity] = useState<Maturity | null>(() => {
+    const mats = generateMaturities();
+    return mats.length > 0 ? mats[0] : null;
+  });
   const [futuresData, setFuturesData] = useState<FuturesPricesData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const maturities = useMemo(() => generateMaturities(), []);
 
   // Load symbols when category changes
   useEffect(() => {
@@ -51,13 +60,13 @@ export default function Futures() {
   }, [category]);
 
   const loadFuturesData = useCallback(async () => {
-    if (!symbol) return;
+    if (!symbol || !maturity) return;
 
     setIsLoading(true);
     setError(null);
 
     try {
-      const data = await fetchFuturesPrices(symbol);
+      const data = await fetchFuturesPrices(symbol, maturity);
       setFuturesData(data);
       if (data && data.futures.length > 0) {
         toast({
@@ -65,7 +74,7 @@ export default function Futures() {
           description: `${data.futures.length} contrats futures pour ${symbol.name}`,
         });
       } else {
-        setError("Aucune donnée futures disponible pour ce symbole.");
+        setError("Aucune donnée futures disponible pour cette combinaison.");
       }
     } catch (err) {
       console.error('Error fetching futures:', err);
@@ -80,13 +89,13 @@ export default function Futures() {
     } finally {
       setIsLoading(false);
     }
-  }, [symbol, toast]);
+  }, [symbol, maturity, toast]);
 
-  // Trigger data load when symbol changes
+  // Trigger data load when symbol or maturity changes
   useEffect(() => {
-    if (!symbol) return;
+    if (!symbol || !maturity) return;
     loadFuturesData();
-  }, [symbol, loadFuturesData]);
+  }, [symbol, maturity, loadFuturesData]);
 
   const handleRefresh = () => {
     loadFuturesData();
@@ -101,7 +110,7 @@ export default function Futures() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-foreground">Prix Futures</h1>
           <p className="text-muted-foreground mt-1">
-            Tous les contrats futures par commodity - toutes les maturités
+            Visualisez les prix des contrats futures par commodity
           </p>
         </div>
 
@@ -115,13 +124,12 @@ export default function Futures() {
               selected={symbol}
               onSelect={setSymbol}
             />
+            <MaturitySelector
+              maturities={maturities}
+              selected={maturity}
+              onSelect={setMaturity}
+            />
             <div className="flex items-center gap-2 ml-auto">
-              {isLoadingSymbols && (
-                <span className="text-sm text-muted-foreground flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Chargement symboles...
-                </span>
-              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -154,12 +162,12 @@ export default function Futures() {
               <div>
                 <h2 className="text-2xl font-semibold text-foreground">
                   {symbol.name}
-                  <span className="text-primary ml-2 font-mono text-lg">
-                    ({symbol.baseSymbol})
+                <span className="text-primary ml-2 font-mono text-lg">
+                  ({symbol.baseSymbol})
                   </span>
                 </h2>
                 <p className="text-muted-foreground">
-                  Tous les contrats futures disponibles • {symbol.exchange}
+                  {maturity?.label} • Courbe des prix futures
                 </p>
               </div>
             </div>
@@ -173,7 +181,7 @@ export default function Futures() {
       <footer className="border-t border-border mt-12 py-6">
         <div className="container mx-auto px-6">
           <p className="text-center text-sm text-muted-foreground">
-            Données extraites de Barchart.com • Tous les contrats futures par symbole
+            Données extraites de Barchart.com • Prix des contrats futures sur commodités
           </p>
         </div>
       </footer>

@@ -46,11 +46,11 @@ serve(async (req) => {
   }
 
   try {
-    const { symbol, name } = await req.json();
+    const { symbol, maturityCode, name } = await req.json();
 
-    if (!symbol) {
+    if (!symbol || !maturityCode) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Symbol is required' }),
+        JSON.stringify({ success: false, error: 'Symbol and maturityCode are required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -64,7 +64,8 @@ serve(async (req) => {
       );
     }
 
-    const cacheKey = symbol;
+    const fullSymbol = `${symbol}${maturityCode}`;
+    const cacheKey = fullSymbol;
 
     // Check cache
     const cached = getFromCache(cache, cacheKey);
@@ -75,12 +76,9 @@ serve(async (req) => {
       });
     }
 
-    // Use the futures-prices page with wildcard pattern to get ALL contracts
-    // Example: https://www.barchart.com/futures/quotes/CL*0/futures-prices
-    // The *0 pattern gets all available contracts for the base symbol
-    const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices`;
+    const url = `https://www.barchart.com/futures/quotes/${fullSymbol}/futures-prices`;
 
-    console.log(`Scraping ALL futures prices for: ${symbol}`);
+    console.log(`Scraping futures prices for: ${fullSymbol}`);
     console.log(`URL: ${url}`);
 
     const existingPromise = inflight.get(cacheKey);
@@ -100,11 +98,7 @@ serve(async (req) => {
               url,
               formats: ['markdown', 'extract'],
               extract: {
-                prompt: `Extract the Futures Prices table from this Barchart page. 
-Return a JSON object with a "futures" array containing ALL contract rows.
-Each row should have: contract (e.g. "CLG25", "CLH25"), month (e.g. "Feb '25"), last (price), change, percentChange, open, high, low, volume, openInterest, time.
-Only include real futures contract rows - contracts should match pattern like ${symbol}[FGHJKMNQUVXZ][0-9]{2}.
-Include ALL available maturities/months shown on the page.`,
+                prompt: 'Extract the Futures Prices table. Return JSON as {"futures":[{"contract":"","month":"","last":"","change":"","percentChange":"","open":"","high":"","low":"","volume":"","openInterest":"","time":""}]}. Only include real contract rows (e.g. CLG26).',
                 schema: {
                   type: 'object',
                   properties: {
@@ -146,8 +140,8 @@ Include ALL available maturities/months shown on the page.`,
 
             return {
               success: false,
-              symbol,
-              name: name || symbol,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
               futures: [],
               code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
               retryAfterSeconds,
@@ -163,23 +157,23 @@ Include ALL available maturities/months shown on the page.`,
           console.log(`Markdown length: ${markdown.length}`);
           console.log(`Has extracted JSON: ${!!extractedJson}`);
 
-          const jsonFutures = parseFuturesFromExtractedJson(extractedJson, symbol);
+          const jsonFutures = parseFuturesFromExtractedJson(extractedJson);
           if (jsonFutures.length > 0) {
             console.log(`Extracted ${jsonFutures.length} futures contracts via JSON`);
             return {
               success: true,
-              symbol,
-              name: name || symbol,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
               futures: jsonFutures,
             };
           }
 
-          const parsed = parseFuturesFromMarkdown(markdown, symbol, name || symbol);
+          const parsed = parseFuturesFromMarkdown(markdown, fullSymbol, name || fullSymbol);
           if (parsed.futures.length === 0) {
             return {
               success: false,
-              symbol,
-              name: name || symbol,
+              symbol: fullSymbol,
+              name: name || fullSymbol,
               futures: [],
               code: 'SCRAPE_FAILED',
               error: 'Aucune ligne futures détectée (structure de page non reconnue).',
@@ -192,8 +186,8 @@ Include ALL available maturities/months shown on the page.`,
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape futures data';
           return {
             success: false,
-            symbol,
-            name: name || symbol,
+            symbol: fullSymbol,
+            name: name || fullSymbol,
             futures: [],
             code: 'SCRAPE_FAILED',
             error: errorMessage,
@@ -208,7 +202,7 @@ Include ALL available maturities/months shown on the page.`,
     try {
       const parsedData = await workPromise;
 
-      console.log(`Parsed ${parsedData.futures.length} futures contracts for ${symbol}`);
+      console.log(`Parsed ${parsedData.futures.length} futures contracts`);
 
       cache.set(cacheKey, {
         expiresAt: Date.now() + (parsedData.success ? CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS),
@@ -263,7 +257,7 @@ function extractRetryAfterSeconds(message?: string): number | null {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
-function parseFuturesFromExtractedJson(extracted: unknown, baseSymbol: string): FuturesPrice[] {
+function parseFuturesFromExtractedJson(extracted: unknown): FuturesPrice[] {
   if (!extracted) return [];
 
   let rows: any[] = [];
@@ -277,8 +271,7 @@ function parseFuturesFromExtractedJson(extracted: unknown, baseSymbol: string): 
     else if (Array.isArray(obj.results)) rows = obj.results;
   }
 
-  // Contract pattern: baseSymbol + month code + 2-digit year
-  const contractRegex = new RegExp(`^${baseSymbol}[FGHJKMNQUVXZ]\\d{2}$`);
+  const contractRegex = /^([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})$/;
   const normalize = (v: unknown) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v));
 
   const parsed = rows
@@ -297,15 +290,13 @@ function parseFuturesFromExtractedJson(extracted: unknown, baseSymbol: string): 
     }))
     .filter((r) => contractRegex.test(r.contract));
 
-  // Deduplicate by contract and sort by contract code
+  // Deduplicate by contract
   const seen = new Set<string>();
-  return parsed
-    .filter((r) => {
-      if (seen.has(r.contract)) return false;
-      seen.add(r.contract);
-      return true;
-    })
-    .sort((a, b) => a.contract.localeCompare(b.contract));
+  return parsed.filter((r) => {
+    if (seen.has(r.contract)) return false;
+    seen.add(r.contract);
+    return true;
+  });
 }
 
 function parseFuturesFromMarkdown(
@@ -314,9 +305,12 @@ function parseFuturesFromMarkdown(
   name: string
 ): FuturesPricesResponse {
   const futures: FuturesPrice[] = [];
-  const contractRegex = new RegExp(`^(${symbol}[FGHJKMNQUVXZ]\\d{2})$`);
 
   const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  
+  // Look for table data pattern: Contract | Month | Last | Change | %Chg | Open | High | Low | Volume | Open Int | Time
+  // The markdown table format may look like:
+  // | CLG25 | Feb '25 | 72.50 | +0.45 | +0.62% | 72.00 | 72.80 | 71.50 | 125,432 | 345,678 | 12:30 |
   
   let inTable = false;
   
@@ -338,7 +332,8 @@ function parseFuturesFromMarkdown(
       const cells = line.split('|').map(c => c.trim()).filter(c => c.length > 0);
       
       if (cells.length >= 6) {
-        const contractMatch = cells[0].match(contractRegex);
+        // Extract contract symbol - should match pattern like CLG25, CLH25, etc.
+        const contractMatch = cells[0].match(/^([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})$/);
         if (contractMatch) {
           futures.push({
             contract: cells[0] || '',
@@ -357,15 +352,18 @@ function parseFuturesFromMarkdown(
       }
     }
     
-    // Also try to parse non-table format
-    const contractLineMatch = line.match(contractRegex);
+    // Also try to parse non-table format (line by line data)
+    // Look for patterns like: CLG25 followed by price data
+    const contractLineMatch = line.match(/^([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})$/);
     if (contractLineMatch) {
       const contract = contractLineMatch[1];
       
+      // Collect following lines as fields
       const nextLines: string[] = [];
       for (let j = i + 1; j < Math.min(i + 12, lines.length); j++) {
         const nextLine = lines[j];
-        if (contractRegex.test(nextLine) || nextLine.includes('Contract')) {
+        // Stop if we hit another contract or section header
+        if (/^[A-Z]{2,4}[FGHJKMNQUVXZ]\d{2}$/.test(nextLine) || nextLine.includes('Contract')) {
           break;
         }
         if (nextLine && !nextLine.startsWith('[') && !nextLine.includes('Please wait')) {
@@ -374,6 +372,7 @@ function parseFuturesFromMarkdown(
       }
       
       if (nextLines.length >= 4) {
+        // Try to extract month pattern like "Feb '25" or "February 2025"
         const monthLine = nextLines.find(l => /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(l));
         
         futures.push({
@@ -393,15 +392,13 @@ function parseFuturesFromMarkdown(
     }
   }
 
-  // Deduplicate by contract and sort
+  // Deduplicate by contract
   const seen = new Set<string>();
-  const uniqueFutures = futures
-    .filter(f => {
-      if (seen.has(f.contract)) return false;
-      seen.add(f.contract);
-      return true;
-    })
-    .sort((a, b) => a.contract.localeCompare(b.contract));
+  const uniqueFutures = futures.filter(f => {
+    if (seen.has(f.contract)) return false;
+    seen.add(f.contract);
+    return true;
+  });
 
   console.log(`Final count - Futures contracts: ${uniqueFutures.length}`);
 
