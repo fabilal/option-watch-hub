@@ -242,21 +242,19 @@ function getOptionPointValue(symbol: string): number {
 }
 
 export async function fetchFuturesPrices(
-  symbol: CommoditySymbol,
-  maturity: Maturity
+  symbol: CommoditySymbol
 ): Promise<FuturesPricesData | null> {
-  const requestKey = `futures:${symbol.baseSymbol}:${maturity.code}`;
+  const requestKey = `futures:${symbol.baseSymbol}`;
   const existing = futuresInflight.get(requestKey);
   if (existing) return existing;
 
   const promise = (async () => {
-    console.log(`Fetching futures prices for ${symbol.baseSymbol}${maturity.code}`);
+    console.log(`Fetching ALL futures prices for ${symbol.baseSymbol}`);
 
     try {
       const { data, error } = await supabase.functions.invoke('scrape-barchart-futures', {
         body: {
           symbol: symbol.baseSymbol,
-          maturityCode: maturity.code,
           name: symbol.name,
         },
       });
