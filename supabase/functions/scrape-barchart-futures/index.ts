@@ -46,11 +46,11 @@ serve(async (req) => {
   }
 
   try {
-    const { symbol, maturityCode, name } = await req.json();
+    const { symbol, name } = await req.json();
 
-    if (!symbol || !maturityCode) {
+    if (!symbol) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Symbol and maturityCode are required' }),
+        JSON.stringify({ success: false, error: 'Symbol is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -64,8 +64,7 @@ serve(async (req) => {
       );
     }
 
-    const fullSymbol = `${symbol}${maturityCode}`;
-    const cacheKey = fullSymbol;
+    const cacheKey = symbol;
 
     // Check cache
     const cached = getFromCache(cache, cacheKey);
@@ -76,9 +75,10 @@ serve(async (req) => {
       });
     }
 
-    const url = `https://www.barchart.com/futures/quotes/${fullSymbol}/futures-prices`;
+    // Use the URL format that shows all maturities for a symbol
+    const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices`;
 
-    console.log(`Scraping futures prices for: ${fullSymbol}`);
+    console.log(`Scraping futures prices for: ${symbol}`);
     console.log(`URL: ${url}`);
 
     const existingPromise = inflight.get(cacheKey);
@@ -140,8 +140,8 @@ serve(async (req) => {
 
             return {
               success: false,
-              symbol: fullSymbol,
-              name: name || fullSymbol,
+              symbol,
+              name: name || symbol,
               futures: [],
               code: isRateLimit ? 'RATE_LIMIT' : 'SCRAPE_FAILED',
               retryAfterSeconds,
@@ -162,18 +162,18 @@ serve(async (req) => {
             console.log(`Extracted ${jsonFutures.length} futures contracts via JSON`);
             return {
               success: true,
-              symbol: fullSymbol,
-              name: name || fullSymbol,
+              symbol,
+              name: name || symbol,
               futures: jsonFutures,
             };
           }
 
-          const parsed = parseFuturesFromMarkdown(markdown, fullSymbol, name || fullSymbol);
+          const parsed = parseFuturesFromMarkdown(markdown, symbol, name || symbol);
           if (parsed.futures.length === 0) {
             return {
               success: false,
-              symbol: fullSymbol,
-              name: name || fullSymbol,
+              symbol,
+              name: name || symbol,
               futures: [],
               code: 'SCRAPE_FAILED',
               error: 'Aucune ligne futures détectée (structure de page non reconnue).',
@@ -186,8 +186,8 @@ serve(async (req) => {
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape futures data';
           return {
             success: false,
-            symbol: fullSymbol,
-            name: name || fullSymbol,
+            symbol,
+            name: name || symbol,
             futures: [],
             code: 'SCRAPE_FAILED',
             error: errorMessage,
