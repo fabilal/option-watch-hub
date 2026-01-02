@@ -10,497 +10,289 @@ import { TypeToggle } from "@/components/TypeToggle";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingSkeleton } from "@/components/LoadingSkeleton";
 
-import { Download, RefreshCw, AlertCircle, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Download, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import {
   COMMODITY_SYMBOLS,
-  COMMODITY_CATEGORIES,
   generateMaturities,
   type CommodityCategory,
   type CommoditySymbol,
   type Maturity,
   type OptionsChain,
 } from "@/lib/commodityData";
-import { fetchOptionsData } from "@/lib/barchartApi";
+import { fetchOptionsData, fetchCategorySymbols } from "@/lib/barchartApi";
 import { useToast } from "@/hooks/use-toast";
-
-interface OptionsDataEntry {
-  category: CommodityCategory;
-  symbol: CommoditySymbol;
-  maturity: Maturity;
-  data: OptionsChain | null;
-  status: 'pending' | 'loading' | 'success' | 'error';
-  error?: string;
-}
 
 export default function Index() {
   const { toast } = useToast();
+  const skipNextLoadRef = useRef(false);
 
-  const [isScrapingAll, setIsScrapingAll] = useState(false);
-  const [allOptionsData, setAllOptionsData] = useState<OptionsDataEntry[]>([]);
-  const [currentProgress, setCurrentProgress] = useState(0);
-  const [totalItems, setTotalItems] = useState(0);
-
-  // Filter states for viewing scraped data
-  const [filterCategory, setFilterCategory] = useState<CommodityCategory | 'all'>('all');
-  const [filterSymbol, setFilterSymbol] = useState<string | 'all'>('all');
-  const [filterMaturity, setFilterMaturity] = useState<string | 'all'>('all');
+  const [category, setCategory] = useState<CommodityCategory>("energies");
+  const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
+  const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
+  const [maturity, setMaturity] = useState<Maturity | null>(() => {
+    const mats = generateMaturities();
+    return mats.length > 0 ? mats[0] : null;
+  });
+  const [optionsData, setOptionsData] = useState<OptionsChain | null>(null);
   const [optionType, setOptionType] = useState<"calls" | "puts" | "all">("all");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Selected entry for detailed view
-  const [selectedEntry, setSelectedEntry] = useState<OptionsDataEntry | null>(null);
+  const maturities = useMemo(() => generateMaturities(), []);
 
-  const maturities = useMemo(() => generateMaturities().slice(0, 6), []); // Limit to 6 maturities for reasonable load
-
-  const allSymbols = useMemo(() => {
-    const symbols: { category: CommodityCategory; symbol: CommoditySymbol }[] = [];
-    (Object.keys(COMMODITY_SYMBOLS) as CommodityCategory[]).forEach(cat => {
-      COMMODITY_SYMBOLS[cat].forEach(sym => {
-        symbols.push({ category: cat, symbol: sym });
-      });
-    });
-    return symbols;
-  }, []);
-
-  const startScrapeAll = useCallback(async () => {
-    setIsScrapingAll(true);
-    setCurrentProgress(0);
-    
-    // Build all combinations
-    const entries: OptionsDataEntry[] = [];
-    allSymbols.forEach(({ category, symbol }) => {
-      maturities.forEach(mat => {
-        entries.push({
-          category,
-          symbol,
-          maturity: mat,
-          data: null,
-          status: 'pending',
-        });
-      });
-    });
-
-    setTotalItems(entries.length);
-    setAllOptionsData(entries);
-
-    // Process in batches to avoid overwhelming the API
-    const batchSize = 2;
-    const delayBetweenBatches = 3000; // 3 seconds between batches
-    
-    for (let i = 0; i < entries.length; i += batchSize) {
-      const batch = entries.slice(i, i + batchSize);
-      
-      // Update status to loading
-      setAllOptionsData(prev => {
-        const updated = [...prev];
-        batch.forEach((_, idx) => {
-          if (updated[i + idx]) {
-            updated[i + idx] = { ...updated[i + idx], status: 'loading' };
-          }
-        });
-        return updated;
-      });
-
-      // Fetch batch in parallel
-      const results = await Promise.allSettled(
-        batch.map(async entry => {
-          try {
-            const data = await fetchOptionsData(entry.symbol, entry.maturity);
-            return { entry, data, error: null };
-          } catch (err) {
-            return { entry, data: null, error: err instanceof Error ? err.message : 'Unknown error' };
-          }
-        })
-      );
-
-      // Update with results
-      setAllOptionsData(prev => {
-        const updated = [...prev];
-        results.forEach((result, idx) => {
-          const entryIdx = i + idx;
-          if (updated[entryIdx]) {
-            if (result.status === 'fulfilled') {
-              const { data, error } = result.value;
-              updated[entryIdx] = {
-                ...updated[entryIdx],
-                data,
-                status: error ? 'error' : 'success',
-                error: error || undefined,
-              };
-            } else {
-              updated[entryIdx] = {
-                ...updated[entryIdx],
-                status: 'error',
-                error: 'Request failed',
-              };
-            }
-          }
-        });
-        return updated;
-      });
-
-      setCurrentProgress(Math.min(i + batchSize, entries.length));
-
-      // Delay before next batch (except for last batch)
-      if (i + batchSize < entries.length) {
-        await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
+  // Load symbols when category changes
+  useEffect(() => {
+    const loadSymbols = async () => {
+      setIsLoadingSymbols(true);
+      try {
+        const fetchedSymbols = await fetchCategorySymbols(category);
+        setSymbols(fetchedSymbols);
+        if (fetchedSymbols.length > 0) {
+          setSymbol(fetchedSymbols[0]);
+        }
+      } catch (err) {
+        console.error('Failed to load symbols:', err);
+        // Fall back to static symbols
+        const staticSymbols = COMMODITY_SYMBOLS[category];
+        setSymbols(staticSymbols);
+        if (staticSymbols.length > 0) {
+          setSymbol(staticSymbols[0]);
+        }
+      } finally {
+        setIsLoadingSymbols(false);
       }
-    }
+    };
 
-    setIsScrapingAll(false);
-    toast({
-      title: "Scraping terminé",
-      description: `${entries.length} combinaisons traitées`,
-    });
-  }, [allSymbols, maturities, toast]);
+    loadSymbols();
+  }, [category]);
 
-  const handleDownloadAll = () => {
-    const successfulData = allOptionsData.filter(e => e.status === 'success' && e.data);
-    if (successfulData.length === 0) return;
+  const loadOptionsData = useCallback(async () => {
+    if (!symbol || !maturity) return;
 
-    const headers = ["Category", "Symbol", "Name", "Maturity", "Strike", "Type", "Latest", "IV", "Delta", "Gamma", "Theta", "Vega", "IV Skew", "Last Trade"];
-    const rows: string[][] = [];
+    setIsLoading(true);
+    setError(null);
 
-    successfulData.forEach(entry => {
-      if (!entry.data) return;
-      [...entry.data.calls, ...entry.data.puts].forEach(opt => {
-        rows.push([
-          entry.category,
-          entry.symbol.baseSymbol,
-          entry.symbol.name,
-          entry.maturity.label,
-          opt.strike.toString(),
-          opt.type,
-          opt.latest,
-          opt.iv.toString(),
-          opt.delta.toString(),
-          opt.gamma.toString(),
-          opt.theta.toString(),
-          opt.vega.toString(),
-          opt.ivSkew.toString(),
-          opt.lastTrade,
-        ]);
+    try {
+      const data = await fetchOptionsData(symbol, maturity);
+      if (!data) return;
+
+      const hasAnyMarketData =
+        data.calls.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00')) ||
+        data.puts.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00'));
+
+      // If no data, try the next maturities automatically (common for grains/softs where only some months have options)
+      if (!hasAnyMarketData) {
+        const startIdx = maturities.findIndex((m) => m.code === maturity.code);
+        const candidates = maturities.slice(Math.max(0, startIdx + 1), startIdx + 7);
+
+        for (const candidate of candidates) {
+          let candidateData: OptionsChain | null = null;
+
+          try {
+            candidateData = await fetchOptionsData(symbol, candidate);
+          } catch (e) {
+            // Ne pas enchaîner les maturités si une erreur backend survient (ex: rate limit)
+            throw e;
+          }
+
+          if (!candidateData) continue;
+
+          const ok =
+            candidateData.calls.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00')) ||
+            candidateData.puts.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00'));
+
+          if (ok) {
+            skipNextLoadRef.current = true;
+            setMaturity(candidate);
+            setOptionsData(candidateData);
+            toast({
+              title: "Maturité ajustée",
+              description: `Aucune donnée sur ${maturity.label}. Passage automatique à ${candidate.label}.`,
+            });
+            return;
+          }
+        }
+
+        // No candidate worked
+        setOptionsData(data);
+        toast({
+          title: "Données limitées",
+          description: "Aucune donnée d'options n'a été trouvée pour cette combinaison symbole/maturité.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setOptionsData(data);
+      toast({
+        title: "Données chargées",
+        description: `${data.calls.length} calls et ${data.puts.length} puts pour ${symbol.name}`,
       });
-    });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Erreur lors du chargement des données';
+      setError(errorMessage);
+      setOptionsData(null);
+      toast({
+        title: "Erreur",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [symbol, maturity, maturities, toast]);
 
-    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+  // Trigger data load when symbol or maturity changes
+  useEffect(() => {
+    if (!symbol || !maturity) return;
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false;
+      return;
+    }
+    loadOptionsData();
+  }, [symbol, maturity, loadOptionsData]);
+
+  const handleRefresh = () => {
+    loadOptionsData();
+  };
+
+  const handleDownload = () => {
+    if (!optionsData) return;
+
+    const csvContent = generateCSV(optionsData);
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `all_options_data_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `${optionsData.symbol}_${maturity?.code}_options.csv`;
     a.click();
     URL.revokeObjectURL(url);
 
     toast({
       title: "Téléchargé",
-      description: `${rows.length} lignes exportées en CSV`,
+      description: "Données exportées en CSV",
     });
   };
 
-  // Filtered data for display
-  const filteredData = useMemo(() => {
-    return allOptionsData.filter(entry => {
-      if (filterCategory !== 'all' && entry.category !== filterCategory) return false;
-      if (filterSymbol !== 'all' && entry.symbol.baseSymbol !== filterSymbol) return false;
-      if (filterMaturity !== 'all' && entry.maturity.code !== filterMaturity) return false;
-      return true;
-    });
-  }, [allOptionsData, filterCategory, filterSymbol, filterMaturity]);
-
-  // Stats
-  const stats = useMemo(() => {
-    const success = allOptionsData.filter(e => e.status === 'success').length;
-    const error = allOptionsData.filter(e => e.status === 'error').length;
-    const pending = allOptionsData.filter(e => e.status === 'pending' || e.status === 'loading').length;
-    const totalCalls = allOptionsData.reduce((sum, e) => sum + (e.data?.calls.length || 0), 0);
-    const totalPuts = allOptionsData.reduce((sum, e) => sum + (e.data?.puts.length || 0), 0);
-    return { success, error, pending, totalCalls, totalPuts };
-  }, [allOptionsData]);
-
-  // Get unique symbols for filter
-  const uniqueSymbols = useMemo(() => {
-    const symbols = new Set<string>();
-    allOptionsData.forEach(e => symbols.add(e.symbol.baseSymbol));
-    return Array.from(symbols).sort();
-  }, [allOptionsData]);
+  const generateCSV = (data: OptionsChain): string => {
+    const headers = ["Strike", "Type", "Latest", "IV", "Delta", "Gamma", "Theta", "Vega", "IV Skew", "Last Trade"];
+    const rows = [...data.calls, ...data.puts].map((opt) => [
+      opt.strike,
+      opt.type,
+      opt.latest,
+      opt.iv,
+      opt.delta,
+      opt.gamma,
+      opt.theta,
+      opt.vega,
+      opt.ivSkew,
+      opt.lastTrade,
+    ]);
+    return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+  };
 
   return (
     <div className="min-h-screen bg-background">
       <Header />
 
       <main className="container mx-auto px-6 py-8">
-        {/* Title & Controls */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-foreground mb-2">
-            Options Data - Toutes les Commodités
-          </h1>
-          <p className="text-muted-foreground mb-6">
-            Scraping complet de toutes les options: {allSymbols.length} symboles × {maturities.length} maturités = {allSymbols.length * maturities.length} combinaisons
-          </p>
+        {/* Selectors */}
+        <div className="space-y-6 mb-8">
+          <CategorySelector selected={category} onSelect={setCategory} />
 
           <div className="flex flex-wrap items-center gap-4">
-            <Button
-              onClick={startScrapeAll}
-              disabled={isScrapingAll}
-              size="lg"
-              className="bg-primary hover:bg-primary/90"
-            >
-              {isScrapingAll ? (
-                <>
-                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  Scraping en cours...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-5 h-5 mr-2" />
-                  Démarrer le Scraping Complet
-                </>
-              )}
-            </Button>
-
-            <Button
-              variant="outline"
-              size="lg"
-              onClick={handleDownloadAll}
-              disabled={stats.success === 0}
-            >
-              <Download className="w-5 h-5 mr-2" />
-              Télécharger Tout (CSV)
-            </Button>
+            <SymbolSelector
+              symbols={symbols}
+              selected={symbol}
+              onSelect={setSymbol}
+            />
+            <MaturitySelector
+              maturities={maturities}
+              selected={maturity}
+              onSelect={setMaturity}
+            />
+            <div className="flex items-center gap-2 ml-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRefresh}
+                disabled={isLoading || !symbol}
+                className="border-border hover:border-primary/50"
+              >
+                <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
+                Actualiser
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownload}
+                disabled={!optionsData || optionsData.calls.length === 0}
+                className="border-border hover:border-primary/50"
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Télécharger
+              </Button>
+            </div>
           </div>
         </div>
 
-        {/* Progress */}
-        {(isScrapingAll || totalItems > 0) && (
-          <Card className="mb-6">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg">Progression du Scraping</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                <Progress value={(currentProgress / Math.max(totalItems, 1)) * 100} />
-                <div className="flex flex-wrap gap-4 text-sm">
-                  <span className="flex items-center gap-1">
-                    <CheckCircle2 className="w-4 h-4 text-green-500" />
-                    Succès: {stats.success}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <XCircle className="w-4 h-4 text-destructive" />
-                    Erreurs: {stats.error}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Loader2 className="w-4 h-4 text-muted-foreground" />
-                    En attente: {stats.pending}
-                  </span>
-                  <span className="text-muted-foreground">|</span>
-                  <span>Total Calls: {stats.totalCalls}</span>
-                  <span>Total Puts: {stats.totalPuts}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Filters */}
-        {allOptionsData.length > 0 && (
-          <Card className="mb-6">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-lg">Filtres</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-wrap gap-4">
-                <div>
-                  <label className="text-sm text-muted-foreground block mb-1">Catégorie</label>
-                  <select
-                    value={filterCategory}
-                    onChange={(e) => setFilterCategory(e.target.value as CommodityCategory | 'all')}
-                    className="bg-background border border-border rounded-md px-3 py-2 text-sm"
-                  >
-                    <option value="all">Toutes</option>
-                    {(Object.keys(COMMODITY_CATEGORIES) as CommodityCategory[]).map(cat => (
-                      <option key={cat} value={cat}>
-                        {COMMODITY_CATEGORIES[cat].icon} {COMMODITY_CATEGORIES[cat].label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-sm text-muted-foreground block mb-1">Symbole</label>
-                  <select
-                    value={filterSymbol}
-                    onChange={(e) => setFilterSymbol(e.target.value)}
-                    className="bg-background border border-border rounded-md px-3 py-2 text-sm"
-                  >
-                    <option value="all">Tous</option>
-                    {uniqueSymbols.map(sym => (
-                      <option key={sym} value={sym}>{sym}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-sm text-muted-foreground block mb-1">Maturité</label>
-                  <select
-                    value={filterMaturity}
-                    onChange={(e) => setFilterMaturity(e.target.value)}
-                    className="bg-background border border-border rounded-md px-3 py-2 text-sm"
-                  >
-                    <option value="all">Toutes</option>
-                    {maturities.map(mat => (
-                      <option key={mat.code} value={mat.code}>{mat.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Data Grid */}
-        {allOptionsData.length > 0 ? (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Left: List of entries */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg">
-                  Données ({filteredData.length} résultats)
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <ScrollArea className="h-[600px]">
-                  <div className="divide-y divide-border">
-                    {filteredData.map((entry, idx) => (
-                      <button
-                        key={`${entry.symbol.baseSymbol}-${entry.maturity.code}-${idx}`}
-                        onClick={() => setSelectedEntry(entry)}
-                        className={`w-full p-3 text-left hover:bg-accent/50 transition-colors ${
-                          selectedEntry === entry ? 'bg-accent' : ''
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-medium text-foreground">
-                                {entry.symbol.baseSymbol}
-                              </span>
-                              <Badge variant="outline" className="text-xs">
-                                {entry.maturity.label}
-                              </Badge>
-                              <Badge variant="secondary" className="text-xs">
-                                {COMMODITY_CATEGORIES[entry.category].icon} {entry.category}
-                              </Badge>
-                            </div>
-                            <p className="text-sm text-muted-foreground truncate">
-                              {entry.symbol.name}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {entry.status === 'loading' && (
-                              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                            )}
-                            {entry.status === 'success' && (
-                              <div className="text-right">
-                                <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                <span className="text-xs text-muted-foreground block">
-                                  {entry.data?.calls.length || 0}C / {entry.data?.puts.length || 0}P
-                                </span>
-                              </div>
-                            )}
-                            {entry.status === 'error' && (
-                              <XCircle className="w-4 h-4 text-destructive" />
-                            )}
-                            {entry.status === 'pending' && (
-                              <span className="text-xs text-muted-foreground">En attente</span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-
-            {/* Right: Selected entry details */}
-            <div className="space-y-4">
-              {selectedEntry?.status === 'success' && selectedEntry.data ? (
-                <>
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>
-                        {selectedEntry.data.name}
-                        <span className="text-primary ml-2 font-mono text-lg">
-                          ({selectedEntry.data.symbol})
-                        </span>
-                      </CardTitle>
-                      <p className="text-muted-foreground text-sm">
-                        {selectedEntry.maturity.label} • IV: {selectedEntry.data.impliedVolatility}%
-                      </p>
-                    </CardHeader>
-                    <CardContent>
-                      <StatsCards data={selectedEntry.data} />
-                    </CardContent>
-                  </Card>
-
-                  {selectedEntry.data.calls.length > 0 && (
-                    <IVSmileChart 
-                      calls={selectedEntry.data.calls} 
-                      puts={selectedEntry.data.puts} 
-                    />
-                  )}
-
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-lg">Chaîne d'Options</CardTitle>
-                        <TypeToggle selected={optionType} onSelect={setOptionType} />
-                      </div>
-                    </CardHeader>
-                    <CardContent className="p-0">
-                      <ScrollArea className="h-[400px]">
-                        <OptionsTable
-                          calls={selectedEntry.data.calls}
-                          puts={selectedEntry.data.puts}
-                          showType={optionType}
-                        />
-                      </ScrollArea>
-                    </CardContent>
-                  </Card>
-                </>
-              ) : selectedEntry?.status === 'error' ? (
-                <Card>
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-3 text-destructive">
-                      <AlertCircle className="w-5 h-5" />
-                      <div>
-                        <p className="font-medium">Erreur</p>
-                        <p className="text-sm text-muted-foreground">{selectedEntry.error}</p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : selectedEntry?.status === 'loading' ? (
-                <LoadingSkeleton />
-              ) : (
-                <Card>
-                  <CardContent className="p-6">
-                    <p className="text-muted-foreground text-center">
-                      Sélectionnez un élément pour voir les détails
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
+        {/* Error State */}
+        {error && (
+          <div className="mb-6 p-4 rounded-lg bg-destructive/10 border border-destructive/20 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-destructive mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm text-foreground font-medium">Erreur de chargement</p>
+              <p className="text-xs text-muted-foreground">{error}</p>
             </div>
           </div>
-        ) : (
-          <EmptyState />
         )}
+
+        {/* Content */}
+        {isLoading ? (
+          <LoadingSkeleton />
+        ) : optionsData && (optionsData.calls.length > 0 || optionsData.puts.length > 0) ? (
+          <div className="space-y-6 animate-fade-in">
+            {/* Contract Info */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold text-foreground">
+                  {optionsData.name}
+                  <span className="text-primary ml-2 font-mono text-lg">
+                    ({optionsData.symbol})
+                  </span>
+                </h2>
+                <p className="text-muted-foreground">
+                  {optionsData.maturity || maturity?.label} • Volatilité & Greeks
+                </p>
+              </div>
+            </div>
+
+            {/* Stats Cards */}
+            <StatsCards data={optionsData} />
+
+            {/* IV Smile Chart */}
+            {optionsData.calls.length > 0 && (
+              <IVSmileChart calls={optionsData.calls} puts={optionsData.puts} />
+            )}
+
+            {/* Options Table */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-foreground">Chaîne d'Options</h3>
+                <TypeToggle selected={optionType} onSelect={setOptionType} />
+              </div>
+              <OptionsTable
+                calls={optionsData.calls}
+                puts={optionsData.puts}
+                showType={optionType}
+              />
+            </div>
+          </div>
+        ) : !isLoading && !error ? (
+          <EmptyState />
+        ) : null}
       </main>
 
       {/* Footer */}
