@@ -76,7 +76,8 @@ serve(async (req) => {
     }
 
     // Use the URL format that shows all maturities for a symbol
-    const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices`;
+    // `viewName=main` tends to load faster and is the canonical table view.
+    const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices?viewName=main`;
 
     console.log(`Scraping futures prices for: ${symbol}`);
     console.log(`URL: ${url}`);
@@ -84,52 +85,73 @@ serve(async (req) => {
     const existingPromise = inflight.get(cacheKey);
     const isOwner = !existingPromise;
 
+    const buildScrapeBody = (waitFor: number) => ({
+      url,
+      // Keep the request as small as possible to reduce timeouts
+      formats: ['extract'],
+      extract: {
+        prompt:
+          'Extract ALL futures contracts from the Futures Prices table. Include EVERY row from the table (20-30+ rows is normal). Return JSON as {"futures":[{"contract":"CLG26","month":"Feb \'26","last":"57.42","change":"-0.54","percentChange":"-0.93%","open":"57.41","high":"57.93","low":"56.60","volume":"140710","openInterest":"312245","time":"13:15 CT"}]}. Include contracts for multiple years (2026, 2027, 2028, etc). Do NOT skip any rows.',
+        schema: {
+          type: 'object',
+          properties: {
+            futures: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  contract: { type: 'string' },
+                  month: { type: 'string' },
+                  last: { type: 'string' },
+                  change: { type: 'string' },
+                  percentChange: { type: 'string' },
+                  open: { type: 'string' },
+                  high: { type: 'string' },
+                  low: { type: 'string' },
+                  volume: { type: 'string' },
+                  openInterest: { type: 'string' },
+                  time: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+      onlyMainContent: true,
+      waitFor,
+    });
+
+    const tryScrape = async (waitFor: number) => {
+      const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildScrapeBody(waitFor)),
+      });
+
+      const scrapeData = await scrapeResponse.json();
+      return { scrapeResponse, scrapeData };
+    };
+
     const workPromise =
       existingPromise ??
       (async (): Promise<FuturesPricesResponse> => {
         try {
-          const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              url,
-              formats: ['markdown', 'extract'],
-              extract: {
-                prompt: 'Extract ALL futures contracts from the Futures Prices table. Include EVERY row from the table - there should be 20-30+ contracts. Return JSON as {"futures":[{"contract":"CLG26","month":"Feb \'26","last":"57.42","change":"-0.54","percentChange":"-0.93%","open":"57.41","high":"57.93","low":"56.60","volume":"140710","openInterest":"312245","time":"13:15 CT"}]}. Include contracts for multiple years (2026, 2027, 2028, etc). Do NOT skip any rows.',
-                schema: {
-                  type: 'object',
-                  properties: {
-                    futures: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          contract: { type: 'string' },
-                          month: { type: 'string' },
-                          last: { type: 'string' },
-                          change: { type: 'string' },
-                          percentChange: { type: 'string' },
-                          open: { type: 'string' },
-                          high: { type: 'string' },
-                          low: { type: 'string' },
-                          volume: { type: 'string' },
-                          openInterest: { type: 'string' },
-                          time: { type: 'string' },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-              onlyMainContent: false,
-              waitFor: 5000,
-            }),
-          });
+          // First attempt: small wait to let the table render.
+          let { scrapeResponse, scrapeData } = await tryScrape(1500);
 
-          const scrapeData = await scrapeResponse.json();
+          // Retry once on timeout with no waiting (often faster).
+          const msg1: string | undefined = scrapeData?.error;
+          const isTimeout =
+            (typeof scrapeData?.code === 'string' && scrapeData.code.toUpperCase().includes('TIMEOUT')) ||
+            (typeof msg1 === 'string' && msg1.toLowerCase().includes('timed out'));
+
+          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeout) {
+            console.warn('Firecrawl timed out; retrying once with waitFor=0');
+            ({ scrapeResponse, scrapeData } = await tryScrape(0));
+          }
 
           if (!scrapeResponse.ok || !scrapeData.success) {
             const msg: string | undefined = scrapeData?.error;
@@ -151,36 +173,27 @@ serve(async (req) => {
 
           console.log('Scrape successful, parsing futures data...');
 
-          const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
           const extractedJson = scrapeData.data?.extract || scrapeData.extract || null;
-
-          console.log(`Markdown length: ${markdown.length}`);
-          console.log(`Has extracted JSON: ${!!extractedJson}`);
-
           const jsonFutures = parseFuturesFromExtractedJson(extractedJson);
-          if (jsonFutures.length > 0) {
-            console.log(`Extracted ${jsonFutures.length} futures contracts via JSON`);
-            return {
-              success: true,
-              symbol,
-              name: name || symbol,
-              futures: jsonFutures,
-            };
-          }
 
-          const parsed = parseFuturesFromMarkdown(markdown, symbol, name || symbol);
-          if (parsed.futures.length === 0) {
+          if (jsonFutures.length === 0) {
             return {
               success: false,
               symbol,
               name: name || symbol,
               futures: [],
               code: 'SCRAPE_FAILED',
-              error: 'Aucune ligne futures détectée (structure de page non reconnue).',
+              error: 'Aucune ligne futures détectée (extraction vide).',
             };
           }
 
-          return parsed;
+          console.log(`Extracted ${jsonFutures.length} futures contracts via JSON`);
+          return {
+            success: true,
+            symbol,
+            name: name || symbol,
+            futures: jsonFutures,
+          };
         } catch (error) {
           console.error('Error in scrape-barchart-futures:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape futures data';
