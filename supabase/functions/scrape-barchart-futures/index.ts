@@ -98,7 +98,7 @@ serve(async (req) => {
               url,
               formats: ['markdown', 'extract'],
               extract: {
-                prompt: 'Extract the Futures Prices table. Return JSON as {"futures":[{"contract":"","month":"","last":"","change":"","percentChange":"","open":"","high":"","low":"","volume":"","openInterest":"","time":""}]}. Only include real contract rows (e.g. CLG26).',
+                prompt: 'Extract ALL futures contracts from the Futures Prices table. Include EVERY row from the table - there should be 20-30+ contracts. Return JSON as {"futures":[{"contract":"CLG26","month":"Feb \'26","last":"57.42","change":"-0.54","percentChange":"-0.93%","open":"57.41","high":"57.93","low":"56.60","volume":"140710","openInterest":"312245","time":"13:15 CT"}]}. Include contracts for multiple years (2026, 2027, 2028, etc). Do NOT skip any rows.',
                 schema: {
                   type: 'object',
                   properties: {
