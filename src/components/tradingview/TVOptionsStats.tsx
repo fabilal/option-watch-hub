@@ -35,10 +35,8 @@ export function TVOptionsStats({ options }: TVOptionsStatsProps) {
         <p className="text-2xl font-bold text-foreground">
           ${options.underlyingPrice || '-'}
         </p>
-        {(options.underlyingContract || options.selectedMaturity) && (
-          <p className="text-xs text-muted-foreground mt-1">
-            {options.underlyingContract || options.selectedMaturity}
-          </p>
+        {options.selectedMaturity && (
+          <p className="text-xs text-muted-foreground mt-1">{options.selectedMaturity}</p>
         )}
       </Card>
 

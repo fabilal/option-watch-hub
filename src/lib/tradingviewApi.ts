@@ -53,7 +53,6 @@ export interface TVOptionContract {
 export interface TVOptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
-  underlyingContract: string;
   maturities: string[];
   selectedMaturity: string;
   calls: TVOptionContract[];
