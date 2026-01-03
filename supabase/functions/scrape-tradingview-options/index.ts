@@ -116,81 +116,7 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: [
-              {
-                type: 'json',
-                schema: {
-                  type: 'object',
-                  properties: {
-                    underlyingSymbol: { type: 'string', description: 'The underlying futures symbol' },
-                    underlyingPrice: { type: 'string', description: 'Current price of underlying' },
-                    maturities: { 
-                      type: 'array', 
-                      items: { type: 'string' },
-                      description: 'List of available expiration dates' 
-                    },
-                    selectedMaturity: { type: 'string', description: 'Currently selected expiration' },
-                    calls: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          strike: { type: 'number', description: 'Strike price' },
-                          symbol: { type: 'string', description: 'Option symbol' },
-                          last: { type: 'string', description: 'Last price' },
-                          change: { type: 'string', description: 'Price change' },
-                          bid: { type: 'string', description: 'Bid price' },
-                          ask: { type: 'string', description: 'Ask price' },
-                          volume: { type: 'string', description: 'Volume' },
-                          openInterest: { type: 'string', description: 'Open interest' },
-                          iv: { type: 'number', description: 'Implied volatility as decimal' },
-                          delta: { type: 'number', description: 'Delta greek' },
-                          gamma: { type: 'number', description: 'Gamma greek' },
-                          theta: { type: 'number', description: 'Theta greek' },
-                          vega: { type: 'number', description: 'Vega greek' },
-                        },
-                      },
-                    },
-                    puts: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          strike: { type: 'number', description: 'Strike price' },
-                          symbol: { type: 'string', description: 'Option symbol' },
-                          last: { type: 'string', description: 'Last price' },
-                          change: { type: 'string', description: 'Price change' },
-                          bid: { type: 'string', description: 'Bid price' },
-                          ask: { type: 'string', description: 'Ask price' },
-                          volume: { type: 'string', description: 'Volume' },
-                          openInterest: { type: 'string', description: 'Open interest' },
-                          iv: { type: 'number', description: 'Implied volatility as decimal' },
-                          delta: { type: 'number', description: 'Delta greek' },
-                          gamma: { type: 'number', description: 'Gamma greek' },
-                          theta: { type: 'number', description: 'Theta greek' },
-                          vega: { type: 'number', description: 'Vega greek' },
-                        },
-                      },
-                    },
-                  },
-                },
-                prompt: `Extract the complete options chain from this TradingView page.
-                
-                1. Find the underlying symbol and current price
-                2. Extract ALL available expiration dates/maturities from the dropdown or list
-                3. For CALLS section, extract each row with:
-                   - strike price
-                   - option symbol
-                   - last price, change, bid, ask
-                   - volume, open interest
-                   - Greeks: IV (implied volatility as decimal like 0.25 for 25%), delta, gamma, theta, vega
-                4. For PUTS section, extract the same fields
-                
-                Make sure to capture ALL strikes visible on the page.
-                Convert percentages to decimals for IV (25% = 0.25).`,
-              },
-              'markdown',
-            ],
+            formats: ['markdown'],
             onlyMainContent: true,
             waitFor: 4000,
           }),
@@ -208,48 +134,11 @@ serve(async (req) => {
           return null;
         }
 
-        const jsonData = data.data?.json || data.json;
-        let optionsData: OptionsChainData | null = null;
-
-        if (jsonData) {
-          optionsData = {
-            underlyingSymbol: jsonData.underlyingSymbol || symbol,
-            underlyingPrice: jsonData.underlyingPrice || '0',
-            maturities: jsonData.maturities || [],
-            selectedMaturity: jsonData.selectedMaturity || maturity || '',
-            calls: (jsonData.calls || []).map((c: any) => ({
-              ...c,
-              type: 'Call' as const,
-              strike: parseFloat(c.strike) || 0,
-              iv: parseFloat(c.iv) || 0,
-              delta: parseFloat(c.delta) || 0,
-              gamma: parseFloat(c.gamma) || 0,
-              theta: parseFloat(c.theta) || 0,
-              vega: parseFloat(c.vega) || 0,
-            })),
-            puts: (jsonData.puts || []).map((p: any) => ({
-              ...p,
-              type: 'Put' as const,
-              strike: parseFloat(p.strike) || 0,
-              iv: parseFloat(p.iv) || 0,
-              delta: parseFloat(p.delta) || 0,
-              gamma: parseFloat(p.gamma) || 0,
-              theta: parseFloat(p.theta) || 0,
-              vega: parseFloat(p.vega) || 0,
-            })),
-          };
-          console.log(`Extracted ${optionsData.calls.length} calls and ${optionsData.puts.length} puts`);
-        }
-
-        // Fallback: try markdown parsing
-        if (!optionsData || (optionsData.calls.length === 0 && optionsData.puts.length === 0)) {
-          const markdown = data.data?.markdown || data.markdown || '';
-          const parsed = parseOptionsFromMarkdown(markdown, symbol);
-          if (parsed.calls.length > 0 || parsed.puts.length > 0) {
-            optionsData = parsed;
-            console.log(`Parsed from markdown: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts`);
-          }
-        }
+        const markdown = data.data?.markdown || data.markdown || '';
+        console.log('Markdown length:', markdown.length);
+        
+        const optionsData = parseOptionsFromMarkdown(markdown, symbol);
+        console.log(`Parsed from markdown: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts`);
 
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 

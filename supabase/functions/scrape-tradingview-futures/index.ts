@@ -101,50 +101,7 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: [
-              {
-                type: 'json',
-                schema: {
-                  type: 'object',
-                  properties: {
-                    contracts: {
-                      type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          symbol: { type: 'string', description: 'Contract symbol like CLH2025' },
-                          expiration: { type: 'string', description: 'Expiration date' },
-                          daysLeft: { type: 'number', description: 'Days until expiration' },
-                          last: { type: 'string', description: 'Last price' },
-                          change: { type: 'string', description: 'Price change' },
-                          changePercent: { type: 'string', description: 'Percent change' },
-                          open: { type: 'string', description: 'Open price' },
-                          high: { type: 'string', description: 'High price' },
-                          low: { type: 'string', description: 'Low price' },
-                          volume: { type: 'string', description: 'Trading volume' },
-                          openInterest: { type: 'string', description: 'Open interest' },
-                        },
-                      },
-                    },
-                  },
-                },
-                prompt: `Extract ALL futures contracts from this TradingView page. 
-                For each contract row, extract:
-                - symbol: The contract symbol (e.g., CLH2025, CLJ2025)
-                - expiration: The expiration date
-                - daysLeft: Number of days until expiration
-                - last: The last traded price
-                - change: The price change (can be negative)
-                - changePercent: The percentage change
-                - open: Opening price
-                - high: Daily high
-                - low: Daily low
-                - volume: Trading volume
-                - openInterest: Open interest
-                Return ALL contracts visible on the page.`,
-              },
-              'markdown',
-            ],
+            formats: ['markdown'],
             onlyMainContent: true,
             waitFor: 3000,
           }),
@@ -162,20 +119,11 @@ serve(async (req) => {
           return null;
         }
 
-        const jsonData = data.data?.json || data.json;
-        let contracts: FuturesContract[] = [];
-
-        if (jsonData?.contracts && Array.isArray(jsonData.contracts)) {
-          contracts = jsonData.contracts.filter((c: any) => c.symbol);
-          console.log(`Extracted ${contracts.length} contracts from JSON`);
-        }
-
-        // Fallback to markdown parsing if JSON extraction failed
-        if (contracts.length === 0) {
-          const markdown = data.data?.markdown || data.markdown || '';
-          contracts = parseContractsFromMarkdown(markdown, symbol);
-          console.log(`Extracted ${contracts.length} contracts from markdown`);
-        }
+        const markdown = data.data?.markdown || data.markdown || '';
+        console.log('Markdown length:', markdown.length);
+        
+        const contracts = parseContractsFromMarkdown(markdown, symbol);
+        console.log(`Extracted ${contracts.length} contracts from markdown`);
 
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 
@@ -217,33 +165,50 @@ function parseContractsFromMarkdown(markdown: string, baseSymbol: string): Futur
   const contracts: FuturesContract[] = [];
   const lines = markdown.split('\n');
   
-  // Look for table rows with contract data
-  const symbolPattern = new RegExp(`${baseSymbol}[A-Z]\\d{4}`, 'gi');
+  // Clean the base symbol (remove trailing 1! etc)
+  const cleanSymbol = baseSymbol.replace(/\d*!$/, '');
   
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const symbolMatch = line.match(symbolPattern);
+  // Pattern to match contract symbols like CLG2026, CLH2026, etc.
+  const symbolPattern = new RegExp(`\\[${cleanSymbol}[A-Z]\\d{4}\\]`, 'gi');
+  
+  for (const line of lines) {
+    // Only process table rows (starting with |)
+    if (!line.startsWith('|')) continue;
     
-    if (symbolMatch) {
-      // Try to extract data from the line
-      const numbers = line.match(/[\d,]+\.?\d*/g) || [];
-      const percentMatch = line.match(/[+-]?\d+\.?\d*%/);
+    const symbolMatch = line.match(symbolPattern);
+    if (!symbolMatch) continue;
+    
+    // Extract the symbol without brackets
+    const contractSymbol = symbolMatch[0].replace(/[\[\]]/g, '');
+    
+    // Split by | to get table cells
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    
+    if (cells.length >= 7) {
+      // Parse the row - format: Symbol/Name | Expiration | Price | Change% | Change | High | Low | Rating
+      const expiration = cells[1] || '';
+      const price = cells[2] || '0';
+      const changePercent = cells[3] || '0%';
+      const change = cells[4] || '0';
+      const high = cells[5] || '0';
+      const low = cells[6] || '0';
       
       contracts.push({
-        symbol: symbolMatch[0].toUpperCase(),
-        expiration: '',
-        daysLeft: parseInt(numbers[0] || '0') || 0,
-        last: numbers[1] || '0',
-        change: numbers[2] || '0',
-        changePercent: percentMatch ? percentMatch[0] : '0%',
-        open: numbers[3] || '0',
-        high: numbers[4] || '0',
-        low: numbers[5] || '0',
-        volume: numbers[6] || '0',
-        openInterest: numbers[7] || '0',
+        symbol: contractSymbol,
+        expiration,
+        daysLeft: 0, // Calculate from expiration if needed
+        last: price,
+        change,
+        changePercent,
+        open: '-',
+        high,
+        low,
+        volume: '-',
+        openInterest: '-',
       });
     }
   }
   
+  console.log(`Found ${contracts.length} contracts for ${cleanSymbol}`);
   return contracts;
 }
