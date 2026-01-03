@@ -32,15 +32,39 @@ interface OptionsChainResponse {
   error?: string;
   code?: 'RATE_LIMIT' | 'SCRAPE_FAILED';
   retryAfterSeconds?: number;
+  fromCache?: boolean;
+  cacheAge?: number;
+}
+
+interface ExtractedOption {
+  strike: number;
+  type: string;
+  latest: string;
+  iv: number;
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  ivSkew: number;
+  lastTrade: string;
+}
+
+interface ExtractedData {
+  daysToExpiration?: number;
+  impliedVolatility?: number;
+  maturity?: string;
+  options?: ExtractedOption[];
 }
 
 type OptionsCacheEntry = {
+  createdAt: number;
   expiresAt: number;
   data: OptionsChainResponse;
 };
 
-const OPTIONS_CACHE_TTL_MS = 30_000;
-const OPTIONS_NEGATIVE_CACHE_TTL_MS = 10_000;
+// Cache TTL: 15 minutes for successful data, 30 seconds for errors
+const OPTIONS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const OPTIONS_NEGATIVE_CACHE_TTL_MS = 30_000; // 30 seconds
 const optionsCache = new Map<string, OptionsCacheEntry>();
 const optionsInflight = new Map<string, Promise<OptionsChainResponse>>();
 
@@ -50,7 +74,7 @@ serve(async (req) => {
   }
 
   try {
-    const { symbol, maturityCode, name, optionPointValue } = await req.json();
+    const { symbol, maturityCode, name, optionPointValue, forceRefresh } = await req.json();
 
     if (!symbol || !maturityCode) {
       return new Response(
@@ -71,12 +95,23 @@ serve(async (req) => {
     const fullSymbol = `${symbol}${maturityCode}`;
     const cacheKey = fullSymbol;
 
-    const cached = getFromCache(optionsCache, cacheKey);
-    if (cached) {
-      console.log(`Cache hit for ${cacheKey}`);
-      return new Response(JSON.stringify(cached), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    // Check cache unless forceRefresh is requested
+    if (!forceRefresh) {
+      const cached = getFromCache(optionsCache, cacheKey);
+      if (cached) {
+        const cacheAge = Math.round((Date.now() - cached.createdAt) / 1000);
+        console.log(`Cache hit for ${cacheKey} (age: ${cacheAge}s)`);
+        return new Response(JSON.stringify({
+          ...cached.data,
+          fromCache: true,
+          cacheAge
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    } else {
+      console.log(`Force refresh requested for ${cacheKey}`);
+      optionsCache.delete(cacheKey);
     }
 
     const url = `https://www.barchart.com/futures/quotes/${fullSymbol}/volatility-greeks?futuresOptionsView=merged`;
@@ -91,7 +126,39 @@ serve(async (req) => {
       existingPromise ??
       (async (): Promise<OptionsChainResponse> => {
         try {
-          // Scrape the page using Firecrawl
+          // Use JSON extraction for structured data
+          const extractionSchema = {
+            type: "object",
+            properties: {
+              daysToExpiration: { type: "number", description: "Number of days until expiration" },
+              impliedVolatility: { type: "number", description: "Overall implied volatility percentage" },
+              maturity: { type: "string", description: "Maturity date string like 'Jan 26' or 'February 2026'" },
+              options: {
+                type: "array",
+                description: "ALL options from both Calls and Puts tables. Extract EVERY single row.",
+                items: {
+                  type: "object",
+                  properties: {
+                    strike: { type: "number", description: "Strike price" },
+                    type: { type: "string", enum: ["Call", "Put"], description: "Option type: Call or Put" },
+                    latest: { type: "string", description: "Latest price" },
+                    iv: { type: "number", description: "Implied Volatility %" },
+                    delta: { type: "number", description: "Delta greek" },
+                    gamma: { type: "number", description: "Gamma greek" },
+                    theta: { type: "number", description: "Theta greek" },
+                    vega: { type: "number", description: "Vega greek" },
+                    ivSkew: { type: "number", description: "IV Skew %" },
+                    lastTrade: { type: "string", description: "Last trade date" }
+                  },
+                  required: ["strike", "type", "iv"]
+                }
+              }
+            },
+            required: ["options"]
+          };
+
+          console.log('Starting Firecrawl extraction...');
+
           const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
             method: 'POST',
             headers: {
@@ -100,9 +167,20 @@ serve(async (req) => {
             },
             body: JSON.stringify({
               url,
-              formats: ['markdown'],
-              onlyMainContent: false,
-              waitFor: 5000,
+              formats: ['extract'],
+              extract: {
+                schema: extractionSchema,
+                prompt: `Extract ALL options data from this commodity options page. 
+                
+CRITICAL INSTRUCTIONS:
+1. Find the "Calls" table and extract EVERY row (all strikes, all data)
+2. Find the "Puts" table and extract EVERY row (all strikes, all data)
+3. For each option, extract: strike, type (Call or Put), latest price, IV, delta, gamma, theta, vega, IV skew, last trade date
+4. Also extract: days to expiration, overall implied volatility, and maturity date
+5. DO NOT skip any rows. There should be 20-50+ options total.
+6. If a value is missing or shows "-" or "unch", use 0 for numbers or empty string for text.`
+              },
+              waitFor: 3000,
             }),
           });
 
@@ -111,7 +189,7 @@ serve(async (req) => {
           if (!scrapeResponse.ok || !scrapeData.success) {
             const msg: string | undefined = scrapeData?.error;
             const isRateLimit = isRateLimitError(msg);
-            const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? undefined : undefined;
+            const retryAfterSeconds = isRateLimit ? extractRetryAfterSeconds(msg) ?? 60 : undefined;
 
             console.error('Firecrawl scrape error:', scrapeData);
 
@@ -131,12 +209,88 @@ serve(async (req) => {
             };
           }
 
-          console.log('Scrape successful, parsing options data...');
+          console.log('Extraction successful, processing data...');
 
-          const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
-          console.log(`Markdown length: ${markdown.length}`);
+          const extractedData: ExtractedData = scrapeData.data?.extract || scrapeData.extract || {};
+          
+          console.log(`Extracted data keys: ${Object.keys(extractedData).join(', ')}`);
+          console.log(`Options count: ${extractedData.options?.length || 0}`);
 
-          return parseOptionsFromMarkdown(markdown, fullSymbol, name || fullSymbol, optionPointValue || 1000);
+          // Process extracted options
+          const calls: OptionData[] = [];
+          const puts: OptionData[] = [];
+
+          if (extractedData.options && Array.isArray(extractedData.options)) {
+            for (const opt of extractedData.options) {
+              const option: OptionData = {
+                strike: Number(opt.strike) || 0,
+                type: opt.type === 'Put' ? 'Put' : 'Call',
+                latest: String(opt.latest || '0.00'),
+                iv: Number(opt.iv) || 0,
+                delta: Number(opt.delta) || 0,
+                gamma: Number(opt.gamma) || 0,
+                theta: Number(opt.theta) || 0,
+                vega: Number(opt.vega) || 0,
+                ivSkew: Number(opt.ivSkew) || 0,
+                lastTrade: String(opt.lastTrade || ''),
+              };
+
+              if (option.strike > 0) {
+                if (option.type === 'Call') {
+                  calls.push(option);
+                } else {
+                  puts.push(option);
+                }
+              }
+            }
+          }
+
+          console.log(`Processed - Calls: ${calls.length}, Puts: ${puts.length}`);
+
+          // If extraction failed to get options, try markdown parsing as fallback
+          if (calls.length === 0 && puts.length === 0) {
+            console.log('JSON extraction returned no options, trying markdown fallback...');
+            
+            const fallbackResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                url,
+                formats: ['html'],
+                waitFor: 3000,
+              }),
+            });
+
+            const fallbackData = await fallbackResponse.json();
+            
+            if (fallbackResponse.ok && fallbackData.success) {
+              const html = fallbackData.data?.html || fallbackData.html || '';
+              console.log(`HTML length: ${html.length}`);
+              
+              // Parse HTML tables directly
+              const parsedFromHtml = parseOptionsFromHtml(html, fullSymbol, name || fullSymbol, optionPointValue || 1000, extractedData);
+              
+              if (parsedFromHtml.calls.length > 0 || parsedFromHtml.puts.length > 0) {
+                console.log(`HTML parsing - Calls: ${parsedFromHtml.calls.length}, Puts: ${parsedFromHtml.puts.length}`);
+                return parsedFromHtml;
+              }
+            }
+          }
+
+          return {
+            success: calls.length > 0 || puts.length > 0,
+            symbol: fullSymbol,
+            name: name || fullSymbol,
+            maturity: extractedData.maturity || '',
+            daysToExpiration: Number(extractedData.daysToExpiration) || 0,
+            impliedVolatility: Math.round((Number(extractedData.impliedVolatility) || 0) * 100) / 100,
+            priceOfOptionPoint: optionPointValue || 1000,
+            calls: calls.sort((a, b) => a.strike - b.strike),
+            puts: puts.sort((a, b) => a.strike - b.strike),
+          };
         } catch (error) {
           console.error('Error in scrape-barchart-options:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape options data';
@@ -163,11 +317,13 @@ serve(async (req) => {
     try {
       const parsedData = await workPromise;
 
-      console.log(`Parsed ${parsedData.calls.length} calls and ${parsedData.puts.length} puts`);
+      console.log(`Final result - Calls: ${parsedData.calls.length}, Puts: ${parsedData.puts.length}`);
 
-      // Cache (also cache short-lived errors to avoid hammering on rate limits)
+      // Cache the result
+      const now = Date.now();
       optionsCache.set(cacheKey, {
-        expiresAt: Date.now() + (parsedData.success ? OPTIONS_CACHE_TTL_MS : OPTIONS_NEGATIVE_CACHE_TTL_MS),
+        createdAt: now,
+        expiresAt: now + (parsedData.success ? OPTIONS_CACHE_TTL_MS : OPTIONS_NEGATIVE_CACHE_TTL_MS),
         data: parsedData,
       });
 
@@ -181,7 +337,6 @@ serve(async (req) => {
     }
 
   } catch (error) {
-    // IMPORTANT: always return 200 so the client can read the payload (avoid "non-2xx" generic errors)
     console.error('Error in scrape-barchart-options:', error);
     const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
 
@@ -205,14 +360,14 @@ serve(async (req) => {
   }
 });
 
-function getFromCache<T>(cache: Map<string, { expiresAt: number; data: T }>, key: string): T | null {
+function getFromCache(cache: Map<string, OptionsCacheEntry>, key: string): OptionsCacheEntry | null {
   const entry = cache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAt) {
     cache.delete(key);
     return null;
   }
-  return entry.data;
+  return entry;
 }
 
 function isRateLimitError(message?: string): boolean {
@@ -225,225 +380,94 @@ function extractRetryAfterSeconds(message?: string): number | null {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
-
-function parseOptionsFromMarkdown(
-  markdown: string,
+// Parse options data from raw HTML
+function parseOptionsFromHtml(
+  html: string,
   symbol: string,
   name: string,
-  optionPointValue: number
+  optionPointValue: number,
+  extractedMeta: ExtractedData
 ): OptionsChainResponse {
   const calls: OptionData[] = [];
   const puts: OptionData[] = [];
-  let daysToExpiration = 0;
-  let impliedVolatility = 0;
-  let maturity = '';
 
-  // Extract days to expiration: "**16 Days** to expiration"
-  const daysMatch = markdown.match(/\*\*(\d+)\s*Days?\*\*\s*to\s*expiration/i);
-  if (daysMatch) {
-    daysToExpiration = parseInt(daysMatch[1], 10);
-    console.log(`Found days to expiration: ${daysToExpiration}`);
-  }
+  // Extract days to expiration
+  const daysMatch = html.match(/(\d+)\s*Days?\s*to\s*expiration/i);
+  const daysToExpiration = daysMatch ? parseInt(daysMatch[1], 10) : (extractedMeta.daysToExpiration || 0);
 
-  // Extract implied volatility: "Implied Volatility: **29.58%**"
-  const ivMatch = markdown.match(/Implied\s*Volatility[:\s]*\*?\*?(\d+\.?\d*)%?\*?\*?/i);
-  if (ivMatch) {
-    impliedVolatility = parseFloat(ivMatch[1]);
-    console.log(`Found implied volatility: ${impliedVolatility}%`);
-  }
+  // Extract implied volatility
+  const ivMatch = html.match(/Implied\s*Volatility[:\s]*(\d+\.?\d*)%/i);
+  const impliedVolatility = ivMatch ? parseFloat(ivMatch[1]) : (extractedMeta.impliedVolatility || 0);
 
-  // Extract maturity from page title or content
-  const maturityMatch = markdown.match(/(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*['']?\d{2,4}/i);
-  if (maturityMatch) {
-    maturity = maturityMatch[0];
-    console.log(`Found maturity: ${maturity}`);
-  }
-
-  // Split markdown into lines and process
-  const lines = markdown.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  // Try to extract table rows using regex
+  // Look for patterns like: strike number followed by Call/Put and then numeric data
   
-  // Find the Calls and Puts sections
-  let inCallsSection = false;
-  let inPutsSection = false;
-  let currentOption: Partial<OptionData> = {};
-  let fieldIndex = 0;
+  // Pattern for table cells with option data
+  const rowPattern = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
+  const rows = html.match(rowPattern) || [];
   
-  // The field order after "Call" or "Put" is:
-  // Latest, IV, Delta, Gamma, Theta, Vega, IV Skew, Last Trade
-  const fieldNames = ['latest', 'iv', 'delta', 'gamma', 'theta', 'vega', 'ivSkew', 'lastTrade'];
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // Detect section markers
-    if (line === '#### Calls' || line.toLowerCase() === 'calls') {
-      inCallsSection = true;
-      inPutsSection = false;
-      currentOption = {};
-      fieldIndex = 0;
+  console.log(`Found ${rows.length} table rows`);
+
+  for (const row of rows) {
+    // Skip header rows
+    if (row.includes('<th') || row.includes('Strike') && row.includes('Type')) {
       continue;
     }
+
+    // Extract cell contents
+    const cellPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const cells: string[] = [];
+    let cellMatch;
     
-    if (line === '#### Puts' || line.toLowerCase() === 'puts') {
-      inCallsSection = false;
-      inPutsSection = true;
-      currentOption = {};
-      fieldIndex = 0;
-      continue;
+    while ((cellMatch = cellPattern.exec(row)) !== null) {
+      // Clean HTML tags and get text content
+      const cellText = cellMatch[1]
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .trim();
+      cells.push(cellText);
     }
-    
-    // Skip header row labels
-    if (['Strike', 'Type', 'Latest', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'IV Skew', 'Last Trade', 'Links'].includes(line)) {
-      continue;
-    }
-    
-    // Skip loading indicators and other non-data
-    if (line.includes('Please wait') || line.includes('throbber') || line.startsWith('![')) {
-      continue;
-    }
-    
-    // Only process when in a data section
-    if (!inCallsSection && !inPutsSection) {
-      continue;
-    }
-    
-    // Check if this is a strike price.
-    // IMPORTANT: latest prices (e.g. "5.33") are also numeric-only, so we validate by peeking ahead:
-    // a real strike is followed by "Call" or "Put".
-    const strikeMatch = line.match(/^(\d+\.?\d*)$/);
-    if (strikeMatch) {
-      const potentialStrike = parseFloat(strikeMatch[1]);
-      if (potentialStrike >= 1 && potentialStrike <= 10000) {
-        // Peek next meaningful line
-        let nextMeaningful: string | undefined;
-        for (let j = i + 1; j < lines.length; j++) {
-          const candidate = lines[j];
 
-          // Skip obvious non-data / noise
-          if (
-            ['Strike', 'Type', 'Latest', 'IV', 'Delta', 'Gamma', 'Theta', 'Vega', 'IV Skew', 'Last Trade', 'Links'].includes(candidate) ||
-            candidate.includes('Please wait') ||
-            candidate.includes('throbber') ||
-            candidate.startsWith('![') ||
-            candidate === 'false' ||
-            candidate.startsWith('[')
-          ) {
-            continue;
-          }
+    // Need at least strike, type, and some data
+    if (cells.length >= 5) {
+      const strikeStr = cells[0];
+      const typeStr = cells[1];
+      
+      const strike = parseFloat(strikeStr.replace(/[,$]/g, ''));
+      
+      if (!isNaN(strike) && strike > 0 && (typeStr === 'Call' || typeStr === 'Put')) {
+        const option: OptionData = {
+          strike,
+          type: typeStr as 'Call' | 'Put',
+          latest: cells[2] || '0.00',
+          iv: parseFloat(cells[3]?.replace('%', '') || '0') || 0,
+          delta: parseFloat(cells[4] || '0') || 0,
+          gamma: parseFloat(cells[5] || '0') || 0,
+          theta: parseFloat(cells[6] || '0') || 0,
+          vega: parseFloat(cells[7] || '0') || 0,
+          ivSkew: parseFloat(cells[8]?.replace('%', '').replace('+', '') || '0') || 0,
+          lastTrade: cells[9] || '',
+        };
 
-          nextMeaningful = candidate;
-          break;
-        }
-
-        // Only treat as strike if next meaningful token is Call/Put
-        if (nextMeaningful === 'Call' || nextMeaningful === 'Put') {
-          // If we have a complete option, save it
-          if (currentOption.strike && currentOption.type) {
-            const option: OptionData = {
-              strike: currentOption.strike,
-              type: currentOption.type,
-              latest: currentOption.latest || '0.00',
-              iv: currentOption.iv || 0,
-              delta: currentOption.delta || 0,
-              gamma: currentOption.gamma || 0,
-              theta: currentOption.theta || 0,
-              vega: currentOption.vega || 0,
-              ivSkew: currentOption.ivSkew || 0,
-              lastTrade: currentOption.lastTrade || '',
-            };
-
-            if (inCallsSection && option.type === 'Call') {
-              calls.push(option);
-            } else if (inPutsSection && option.type === 'Put') {
-              puts.push(option);
-            }
-          }
-
-          // Start new option
-          currentOption = { strike: potentialStrike };
-          fieldIndex = 0;
-          continue;
+        if (option.type === 'Call') {
+          calls.push(option);
+        } else {
+          puts.push(option);
         }
       }
     }
-    
-    // Check if this is Call or Put
-    if (line === 'Call' || line === 'Put') {
-      currentOption.type = line as 'Call' | 'Put';
-      fieldIndex = 0;
-      continue;
-    }
-    
-    // If we have a strike and type, collect the remaining fields
-    if (currentOption.strike && currentOption.type && fieldIndex < fieldNames.length) {
-      const fieldName = fieldNames[fieldIndex];
-      
-      switch (fieldName) {
-        case 'latest':
-          currentOption.latest = line.replace(/[^\d.s]/g, '') || line;
-          break;
-        case 'iv':
-          currentOption.iv = parseFloat(line.replace('%', '')) || 0;
-          break;
-        case 'delta':
-          currentOption.delta = parseFloat(line) || 0;
-          break;
-        case 'gamma':
-          currentOption.gamma = parseFloat(line) || 0;
-          break;
-        case 'theta':
-          currentOption.theta = parseFloat(line) || 0;
-          break;
-        case 'vega':
-          currentOption.vega = parseFloat(line) || 0;
-          break;
-        case 'ivSkew':
-          currentOption.ivSkew = parseFloat(line.replace('%', '').replace('+', '')) || 0;
-          if (line.startsWith('-')) {
-            currentOption.ivSkew = -Math.abs(currentOption.ivSkew);
-          }
-          break;
-        case 'lastTrade':
-          currentOption.lastTrade = line;
-          break;
-      }
-      
-      fieldIndex++;
-    }
-  }
-  
-  // Don't forget to save the last option
-  if (currentOption.strike && currentOption.type) {
-    const option: OptionData = {
-      strike: currentOption.strike,
-      type: currentOption.type,
-      latest: currentOption.latest || '0.00',
-      iv: currentOption.iv || 0,
-      delta: currentOption.delta || 0,
-      gamma: currentOption.gamma || 0,
-      theta: currentOption.theta || 0,
-      vega: currentOption.vega || 0,
-      ivSkew: currentOption.ivSkew || 0,
-      lastTrade: currentOption.lastTrade || '',
-    };
-    
-    if (inCallsSection && option.type === 'Call') {
-      calls.push(option);
-    } else if (inPutsSection && option.type === 'Put') {
-      puts.push(option);
-    }
   }
 
-  console.log(`Final count - Calls: ${calls.length}, Puts: ${puts.length}`);
+  console.log(`HTML parsing result - Calls: ${calls.length}, Puts: ${puts.length}`);
 
   return {
-    success: true,
+    success: calls.length > 0 || puts.length > 0,
     symbol,
-    name: name || symbol,
-    maturity,
+    name,
+    maturity: extractedMeta.maturity || '',
     daysToExpiration,
     impliedVolatility: Math.round(impliedVolatility * 100) / 100,
-    priceOfOptionPoint: optionPointValue || 1000,
+    priceOfOptionPoint: optionPointValue,
     calls: calls.sort((a, b) => a.strike - b.strike),
     puts: puts.sort((a, b) => a.strike - b.strike),
   };
