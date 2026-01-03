@@ -20,27 +20,28 @@ import {
   type Maturity,
   type OptionsChain,
 } from "@/lib/commodityData";
-import { fetchOptionsData, fetchCategorySymbols } from "@/lib/barchartApi";
+import { fetchAvailableMaturities, fetchOptionsData, fetchCategorySymbols } from "@/lib/barchartApi";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Index() {
   const { toast } = useToast();
   const skipNextLoadRef = useRef(false);
 
+  const initialMaturities = useMemo(() => generateMaturities(), []);
+
   const [category, setCategory] = useState<CommodityCategory>("energies");
   const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
   const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
-  const [maturity, setMaturity] = useState<Maturity | null>(() => {
-    const mats = generateMaturities();
-    return mats.length > 0 ? mats[0] : null;
-  });
+
+  const [maturities, setMaturities] = useState<Maturity[]>(initialMaturities);
+  const [maturity, setMaturity] = useState<Maturity | null>(initialMaturities.length > 0 ? initialMaturities[0] : null);
+  const [isLoadingMaturities, setIsLoadingMaturities] = useState(false);
+
   const [optionsData, setOptionsData] = useState<OptionsChain | null>(null);
   const [optionType, setOptionType] = useState<"calls" | "puts" | "all">("all");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const maturities = useMemo(() => generateMaturities(), []);
 
   // Load symbols when category changes
   useEffect(() => {
@@ -68,8 +69,52 @@ export default function Index() {
     loadSymbols();
   }, [category]);
 
+  // Load maturities from the original site for the selected symbol
+  useEffect(() => {
+    const loadMaturities = async () => {
+      if (!symbol) return;
+
+      setIsLoadingMaturities(true);
+
+      try {
+        const fetched = await fetchAvailableMaturities(symbol);
+
+        if (fetched.length > 0) {
+          setMaturities(fetched);
+          setMaturity((prev) => {
+            const stillValid = prev ? fetched.find((m) => m.code === prev.code) : null;
+            return stillValid || fetched[0];
+          });
+          return;
+        }
+
+        // fallback
+        const fallback = generateMaturities();
+        setMaturities(fallback);
+        setMaturity(fallback.length > 0 ? fallback[0] : null);
+      } catch (err) {
+        console.error('Failed to load maturities:', err);
+        toast({
+          title: "Maturités indisponibles",
+          description: "Impossible de charger la liste complète depuis la source. Liste par défaut appliquée.",
+          variant: "destructive",
+        });
+
+        const fallback = generateMaturities();
+        setMaturities(fallback);
+        setMaturity(fallback.length > 0 ? fallback[0] : null);
+      } finally {
+        setIsLoadingMaturities(false);
+      }
+    };
+
+    loadMaturities();
+  }, [symbol?.baseSymbol, toast]);
+
   const loadOptionsData = useCallback(async () => {
     if (!symbol || !maturity) return;
+    if (isLoadingMaturities) return;
+    if (!maturities.some((m) => m.code === maturity.code)) return;
 
     setIsLoading(true);
     setError(null);
@@ -82,7 +127,7 @@ export default function Index() {
         data.calls.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00')) ||
         data.puts.some((o) => o.iv > 0 || o.delta !== 0 || (o.latest && o.latest !== '0.00'));
 
-      // If no data, try the next maturities automatically (common for grains/softs where only some months have options)
+      // If no data, try the next maturities automatically
       if (!hasAnyMarketData) {
         const startIdx = maturities.findIndex((m) => m.code === maturity.code);
         const candidates = maturities.slice(Math.max(0, startIdx + 1), startIdx + 7);
@@ -142,17 +187,20 @@ export default function Index() {
     } finally {
       setIsLoading(false);
     }
-  }, [symbol, maturity, maturities, toast]);
+  }, [symbol, maturity, maturities, toast, isLoadingMaturities]);
 
   // Trigger data load when symbol or maturity changes
   useEffect(() => {
     if (!symbol || !maturity) return;
+    if (isLoadingMaturities) return;
+
     if (skipNextLoadRef.current) {
       skipNextLoadRef.current = false;
       return;
     }
+
     loadOptionsData();
-  }, [symbol, maturity, loadOptionsData]);
+  }, [symbol, maturity, loadOptionsData, isLoadingMaturities]);
 
   const handleRefresh = () => {
     loadOptionsData();
@@ -203,15 +251,12 @@ export default function Index() {
           <CategorySelector selected={category} onSelect={setCategory} />
 
           <div className="flex flex-wrap items-center gap-4">
-            <SymbolSelector
-              symbols={symbols}
-              selected={symbol}
-              onSelect={setSymbol}
-            />
+            <SymbolSelector symbols={symbols} selected={symbol} onSelect={setSymbol} />
             <MaturitySelector
               maturities={maturities}
               selected={maturity}
               onSelect={setMaturity}
+              disabled={isLoadingMaturities || maturities.length === 0}
             />
             <div className="flex items-center gap-2 ml-auto">
               <Button
@@ -259,13 +304,9 @@ export default function Index() {
               <div>
                 <h2 className="text-2xl font-semibold text-foreground">
                   {optionsData.name}
-                  <span className="text-primary ml-2 font-mono text-lg">
-                    ({optionsData.symbol})
-                  </span>
+                  <span className="text-primary ml-2 font-mono text-lg">({optionsData.symbol})</span>
                 </h2>
-                <p className="text-muted-foreground">
-                  {optionsData.maturity || maturity?.label} • Volatilité & Greeks
-                </p>
+                <p className="text-muted-foreground">{optionsData.maturity || maturity?.label} • Volatilité & Greeks</p>
               </div>
             </div>
 
@@ -273,9 +314,7 @@ export default function Index() {
             <StatsCards data={optionsData} />
 
             {/* IV Smile Chart */}
-            {optionsData.calls.length > 0 && (
-              <IVSmileChart calls={optionsData.calls} puts={optionsData.puts} />
-            )}
+            {optionsData.calls.length > 0 && <IVSmileChart calls={optionsData.calls} puts={optionsData.puts} />}
 
             {/* Options Table */}
             <div className="space-y-4">
@@ -283,11 +322,7 @@ export default function Index() {
                 <h3 className="text-lg font-semibold text-foreground">Chaîne d'Options</h3>
                 <TypeToggle selected={optionType} onSelect={setOptionType} />
               </div>
-              <OptionsTable
-                calls={optionsData.calls}
-                puts={optionsData.puts}
-                showType={optionType}
-              />
+              <OptionsTable calls={optionsData.calls} puts={optionsData.puts} showType={optionType} />
             </div>
           </div>
         ) : !isLoading && !error ? (

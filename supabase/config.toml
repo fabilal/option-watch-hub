@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.scrape-barchart-futures]
 verify_jwt = false
+
+[functions.scrape-barchart-maturities]
+verify_jwt = false
