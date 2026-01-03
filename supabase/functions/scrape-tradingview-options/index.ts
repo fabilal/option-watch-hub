@@ -29,6 +29,7 @@ interface OptionContract {
 interface OptionsChainData {
   underlyingSymbol: string;
   underlyingPrice: string;
+  underlyingContract: string;
   maturities: string[];
   selectedMaturity: string;
   calls: OptionContract[];
@@ -102,8 +103,8 @@ serve(async (req) => {
       );
     }
 
-    // Build URL
-    let url = `https://www.tradingview.com/symbols/${exchange}-${symbol}/options-chain/`;
+    // Build URL - use French version for better data
+    const url = `https://fr.tradingview.com/symbols/${exchange}-${symbol}/options-chain/`;
     console.log(`Scraping TradingView options: ${url}`);
 
     const scrapePromise = (async (): Promise<OptionsChainData | null> => {
@@ -139,6 +140,7 @@ serve(async (req) => {
         
         const optionsData = parseOptionsFromMarkdown(markdown, symbol);
         console.log(`Parsed: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts, ${optionsData.maturities.length} maturities`);
+        console.log(`Underlying: ${optionsData.underlyingContract} @ ${optionsData.underlyingPrice}`);
 
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 
@@ -180,6 +182,7 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
   const result: OptionsChainData = {
     underlyingSymbol: symbol,
     underlyingPrice: '0',
+    underlyingContract: '',
     maturities: [],
     selectedMaturity: '',
     calls: [],
@@ -188,118 +191,149 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
 
   const lines = markdown.split('\n');
   
-  // Extract underlying price - look for pattern like "57.33DUSD" or "57.33USD"
-  const priceMatch = markdown.match(/(\d+\.\d+)\s*D?USD/);
+  // Extract underlying price - look for pattern like "57,32DUSD" or "57.32USD"
+  const priceMatch = markdown.match(/(\d+[,\.]\d+)\s*D?USD/);
   if (priceMatch) {
-    result.underlyingPrice = priceMatch[1];
+    result.underlyingPrice = priceMatch[1].replace(',', '.');
   }
 
-  // Extract maturities - look for patterns like "Jan '26", "Feb", "Mar '27", etc
-  const maturityPattern = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s*'?\d{2})?/g;
-  const foundMaturities = new Set<string>();
-  let match;
-  while ((match = maturityPattern.exec(markdown)) !== null) {
-    foundMaturities.add(match[0]);
-  }
-  result.maturities = Array.from(foundMaturities).slice(0, 24);
-
-  // Find the underlying contract info (e.g., "CLH2026 57.13")
-  const contractMatch = markdown.match(/([A-Z]{2,4}[A-Z]\d{4})\s+(\d+\.\d+)/);
+  // Extract underlying contract info (e.g., "CLH2026 57,12" or "CLH2026 57.12")
+  const contractMatch = markdown.match(/([A-Z]{2,4}[A-Z]\d{4})\s+(\d+[,\.]\d+)/);
   if (contractMatch) {
+    result.underlyingContract = contractMatch[1];
     result.selectedMaturity = contractMatch[1];
-    result.underlyingPrice = contractMatch[2];
+    result.underlyingPrice = contractMatch[2].replace(',', '.');
   }
 
-  // Parse options table
-  // Table format: Bid IV | Ask IV | Intr. value | Time value | Rho | Vega | Theta | Gamma | Delta | Price | Ask | Bid | Volume | Strike | IV | Volume | Bid | Ask | Price | Delta | Gamma | Theta | Vega | Rho | Time value | Intr. value | Ask IV | Bid IV
+  // Extract maturities from the calendar section
+  // Look for patterns like "janv. '26", "févr.", "mars", "déc. '25", etc.
+  const maturityPatterns = [
+    // French month abbreviations with year
+    /(?:janv\.|févr\.|mars|avr\.|mai|juin|juil\.|août|sept\.|oct\.|nov\.|déc\.)\s*(?:'?\d{2})?/gi,
+    // English months
+    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s*'?\d{2})?/gi,
+  ];
+  
+  const foundMaturities = new Set<string>();
+  
+  // Find section between calendar display and the table
+  const calendarSection = markdown.substring(0, markdown.indexOf('| Calls |'));
+  
+  for (const pattern of maturityPatterns) {
+    let match;
+    while ((match = pattern.exec(calendarSection)) !== null) {
+      const mat = match[0].trim();
+      if (mat.length > 2) {
+        foundMaturities.add(mat);
+      }
+    }
+  }
+  
+  // Also look for date patterns like "30", "31", etc. that follow month names
+  // These are expiration dates within months
+  
+  result.maturities = Array.from(foundMaturities).slice(0, 50);
+
+  // Parse the options table
+  // Table header: Bid IV, % | Ask IV, % | Valeur intr. | Valeur temps | Rho | Vega | Theta | Gamma | Delta | Prix | Demande | Offre | Volume | Strike | IV, % | Volume | Offre | Demande | Prix | Delta | Gamma | Theta | Vega | Rho | Valeur temps | Valeur intr. | Ask IV, % | Bid IV, %
+  
+  let inTable = false;
   
   for (const line of lines) {
+    // Skip non-table lines
     if (!line.startsWith('|')) continue;
-    if (line.includes('Strike') || line.includes('---')) continue;
     
-    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    // Skip header rows
+    if (line.includes('Calls') || line.includes('Puts') || line.includes('Strike') || line.includes('---')) {
+      inTable = true;
+      continue;
+    }
     
-    // Need at least 28 cells for full options row (14 for calls + strike + IV + 14 for puts)
-    // But we also see rows with strike like "56.0056.00" in the middle
+    if (!inTable) continue;
     
-    // Try to find a row with strike price pattern (e.g., 56.0056.00 or just numbers)
-    const strikeCell = cells.find(c => /^\d+\.\d+\d+\.\d+$/.test(c) || /^\d+\.\d+$/.test(c));
-    if (!strikeCell) continue;
+    // Parse table row
+    const cells = line.split('|').map(c => c.trim()).filter(c => c.length > 0);
     
-    // Extract strike price
-    const strikeMatch = strikeCell.match(/^(\d+\.\d+)/);
-    if (!strikeMatch) continue;
-    const strike = parseFloat(strikeMatch[1]);
+    // Find strike price cell - it has pattern like "56,0056,00" or "57.0057.00"
+    // Or just "56,00" or "57.00"
+    let strikeIndex = -1;
+    let strikeValue = 0;
     
-    // Find the index of the strike cell
-    const strikeIndex = cells.indexOf(strikeCell);
-    if (strikeIndex === -1) continue;
-    
-    // Calls are before strike, Puts are after
-    // Expected order for calls (from left): Bid IV, Ask IV, Intr, Time, Rho, Vega, Theta, Gamma, Delta, Price, Ask, Bid, Volume
-    // Then Strike, IV (middle)
-    // Then Puts: Volume, Bid, Ask, Price, Delta, Gamma, Theta, Vega, Rho, Time, Intr, Ask IV, Bid IV
-    
-    try {
-      // Parse Call option (cells before strike)
-      if (strikeIndex >= 13) {
-        const callCells = cells.slice(0, strikeIndex);
-        const call: OptionContract = {
-          strike,
-          type: 'Call',
-          symbol: '',
-          bidIv: parseFloat(callCells[0]) || 0,
-          askIv: parseFloat(callCells[1]) || 0,
-          intrinsicValue: parseFloat(callCells[2]) || 0,
-          timeValue: parseFloat(callCells[3]) || 0,
-          rho: parseFloat(callCells[4]) || 0,
-          vega: parseFloat(callCells[5]) || 0,
-          theta: parseFloat(callCells[6]) || 0,
-          gamma: parseFloat(callCells[7]) || 0,
-          delta: parseFloat(callCells[8]) || 0,
-          last: callCells[9] || '0',
-          ask: callCells[10] || '0',
-          bid: callCells[11] || '0',
-          volume: callCells[12] || '0',
-          iv: (parseFloat(callCells[0]) + parseFloat(callCells[1])) / 2 || 0,
-        };
-        
-        if (call.delta !== 0 || call.last !== '0') {
-          result.calls.push(call);
-        }
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      // Match strike pattern: "56,0056,00" or "56.0056.00" (strike appears twice)
+      const doubleStrikeMatch = cell.match(/^(\d+[,\.]\d+)\d+[,\.]\d+$/);
+      if (doubleStrikeMatch) {
+        strikeValue = parseFloat(doubleStrikeMatch[1].replace(',', '.'));
+        strikeIndex = i;
+        break;
       }
+    }
+    
+    if (strikeIndex === -1 || strikeValue === 0) continue;
+    
+    // Parse CALL data (columns BEFORE strike)
+    // Order: Bid IV, Ask IV, Intr., Time, Rho, Vega, Theta, Gamma, Delta, Prix, Demande(Ask), Offre(Bid), Volume
+    const callCells = cells.slice(0, strikeIndex);
+    
+    if (callCells.length >= 13) {
+      const call: OptionContract = {
+        strike: strikeValue,
+        type: 'Call',
+        symbol: '',
+        bidIv: parseNumFr(callCells[0]),
+        askIv: parseNumFr(callCells[1]),
+        intrinsicValue: parseNumFr(callCells[2]),
+        timeValue: parseNumFr(callCells[3]),
+        rho: parseNumFr(callCells[4]),
+        vega: parseNumFr(callCells[5]),
+        theta: parseNumFr(callCells[6]),
+        gamma: parseNumFr(callCells[7]),
+        delta: parseNumFr(callCells[8]),
+        last: formatPrice(callCells[9]),
+        ask: formatPrice(callCells[10]),
+        bid: formatPrice(callCells[11]),
+        volume: callCells[12] === '—' ? '0' : callCells[12],
+        iv: (parseNumFr(callCells[0]) + parseNumFr(callCells[1])) / 2,
+      };
       
-      // Parse Put option (cells after strike + IV)
-      // Skip 2 cells after strike (Strike repeated + IV)
-      const putStartIndex = strikeIndex + 2;
-      if (cells.length > putStartIndex + 13) {
-        const putCells = cells.slice(putStartIndex);
-        const put: OptionContract = {
-          strike,
-          type: 'Put',
-          symbol: '',
-          volume: putCells[0] || '0',
-          bid: putCells[1] || '0',
-          ask: putCells[2] || '0',
-          last: putCells[3] || '0',
-          delta: parseFloat(putCells[4]) || 0,
-          gamma: parseFloat(putCells[5]) || 0,
-          theta: parseFloat(putCells[6]) || 0,
-          vega: parseFloat(putCells[7]) || 0,
-          rho: parseFloat(putCells[8]) || 0,
-          timeValue: parseFloat(putCells[9]) || 0,
-          intrinsicValue: parseFloat(putCells[10]) || 0,
-          askIv: parseFloat(putCells[11]) || 0,
-          bidIv: parseFloat(putCells[12]) || 0,
-          iv: (parseFloat(putCells[11]) + parseFloat(putCells[12])) / 2 || 0,
-        };
-        
-        if (put.delta !== 0 || put.last !== '0') {
-          result.puts.push(put);
-        }
+      // Only add if we have meaningful data
+      if (call.delta !== 0 || call.last !== '0') {
+        result.calls.push(call);
       }
-    } catch (e) {
-      console.error('Error parsing row:', e);
+    }
+    
+    // Parse PUT data (columns AFTER strike + IV column)
+    // Strike cell is at strikeIndex, next is IV, then puts start
+    // Order: IV, Volume, Offre(Bid), Demande(Ask), Prix, Delta, Gamma, Theta, Vega, Rho, Time, Intr., Ask IV, Bid IV
+    const ivColIndex = strikeIndex + 1;
+    const putCells = cells.slice(ivColIndex + 1);
+    
+    if (putCells.length >= 13) {
+      const put: OptionContract = {
+        strike: strikeValue,
+        type: 'Put',
+        symbol: '',
+        volume: putCells[0] === '—' ? '0' : putCells[0],
+        bid: formatPrice(putCells[1]),
+        ask: formatPrice(putCells[2]),
+        last: formatPrice(putCells[3]),
+        delta: parseNumFr(putCells[4]),
+        gamma: parseNumFr(putCells[5]),
+        theta: parseNumFr(putCells[6]),
+        vega: parseNumFr(putCells[7]),
+        rho: parseNumFr(putCells[8]),
+        timeValue: parseNumFr(putCells[9]),
+        intrinsicValue: parseNumFr(putCells[10]),
+        askIv: parseNumFr(putCells[11]),
+        bidIv: parseNumFr(putCells[12]),
+        iv: (parseNumFr(putCells[11]) + parseNumFr(putCells[12])) / 2,
+      };
+      
+      // Only add if we have meaningful data
+      if (put.delta !== 0 || put.last !== '0') {
+        result.puts.push(put);
+      }
     }
   }
 
@@ -308,4 +342,19 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
   result.puts.sort((a, b) => a.strike - b.strike);
 
   return result;
+}
+
+// Parse French number format (comma as decimal separator)
+function parseNumFr(val: string): number {
+  if (!val || val === '—' || val === '-') return 0;
+  // Handle negative numbers with − (unicode minus)
+  const normalized = val.replace('−', '-').replace(',', '.').replace(/\s/g, '');
+  const num = parseFloat(normalized);
+  return isNaN(num) ? 0 : num;
+}
+
+// Format price string
+function formatPrice(val: string): string {
+  if (!val || val === '—' || val === '-') return '0';
+  return val.replace(',', '.');
 }
