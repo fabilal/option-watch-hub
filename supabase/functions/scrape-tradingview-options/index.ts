@@ -11,16 +11,19 @@ interface OptionContract {
   type: 'Call' | 'Put';
   symbol: string;
   last: string;
-  change: string;
   bid: string;
   ask: string;
   volume: string;
-  openInterest: string;
   iv: number;
+  bidIv: number;
+  askIv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
+  rho: number;
+  intrinsicValue: number;
+  timeValue: number;
 }
 
 interface OptionsChainData {
@@ -99,11 +102,8 @@ serve(async (req) => {
       );
     }
 
-    // Build URL: https://www.tradingview.com/symbols/NYMEX-CL1!/options-chain/
+    // Build URL
     let url = `https://www.tradingview.com/symbols/${exchange}-${symbol}/options-chain/`;
-    if (maturity) {
-      url += `?expiration=${encodeURIComponent(maturity)}`;
-    }
     console.log(`Scraping TradingView options: ${url}`);
 
     const scrapePromise = (async (): Promise<OptionsChainData | null> => {
@@ -118,7 +118,7 @@ serve(async (req) => {
             url,
             formats: ['markdown'],
             onlyMainContent: true,
-            waitFor: 4000,
+            waitFor: 5000,
           }),
         });
 
@@ -138,7 +138,7 @@ serve(async (req) => {
         console.log('Markdown length:', markdown.length);
         
         const optionsData = parseOptionsFromMarkdown(markdown, symbol);
-        console.log(`Parsed from markdown: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts`);
+        console.log(`Parsed: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts, ${optionsData.maturities.length} maturities`);
 
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 
@@ -187,52 +187,125 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
   };
 
   const lines = markdown.split('\n');
-  let inCalls = false;
-  let inPuts = false;
+  
+  // Extract underlying price - look for pattern like "57.33DUSD" or "57.33USD"
+  const priceMatch = markdown.match(/(\d+\.\d+)\s*D?USD/);
+  if (priceMatch) {
+    result.underlyingPrice = priceMatch[1];
+  }
 
+  // Extract maturities - look for patterns like "Jan '26", "Feb", "Mar '27", etc
+  const maturityPattern = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s*'?\d{2})?/g;
+  const foundMaturities = new Set<string>();
+  let match;
+  while ((match = maturityPattern.exec(markdown)) !== null) {
+    foundMaturities.add(match[0]);
+  }
+  result.maturities = Array.from(foundMaturities).slice(0, 24);
+
+  // Find the underlying contract info (e.g., "CLH2026 57.13")
+  const contractMatch = markdown.match(/([A-Z]{2,4}[A-Z]\d{4})\s+(\d+\.\d+)/);
+  if (contractMatch) {
+    result.selectedMaturity = contractMatch[1];
+    result.underlyingPrice = contractMatch[2];
+  }
+
+  // Parse options table
+  // Table format: Bid IV | Ask IV | Intr. value | Time value | Rho | Vega | Theta | Gamma | Delta | Price | Ask | Bid | Volume | Strike | IV | Volume | Bid | Ask | Price | Delta | Gamma | Theta | Vega | Rho | Time value | Intr. value | Ask IV | Bid IV
+  
   for (const line of lines) {
-    const lowerLine = line.toLowerCase();
+    if (!line.startsWith('|')) continue;
+    if (line.includes('Strike') || line.includes('---')) continue;
     
-    if (lowerLine.includes('call')) {
-      inCalls = true;
-      inPuts = false;
-    } else if (lowerLine.includes('put')) {
-      inPuts = true;
-      inCalls = false;
-    }
-
-    // Look for strike prices (numbers with decimals)
-    const strikeMatch = line.match(/\b(\d+(?:\.\d+)?)\b/);
-    if (strikeMatch) {
-      const strike = parseFloat(strikeMatch[1]);
-      if (strike > 0 && strike < 100000) {
-        const numbers = line.match(/[\d,]+\.?\d*/g) || [];
-        
-        const option: OptionContract = {
+    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    
+    // Need at least 28 cells for full options row (14 for calls + strike + IV + 14 for puts)
+    // But we also see rows with strike like "56.0056.00" in the middle
+    
+    // Try to find a row with strike price pattern (e.g., 56.0056.00 or just numbers)
+    const strikeCell = cells.find(c => /^\d+\.\d+\d+\.\d+$/.test(c) || /^\d+\.\d+$/.test(c));
+    if (!strikeCell) continue;
+    
+    // Extract strike price
+    const strikeMatch = strikeCell.match(/^(\d+\.\d+)/);
+    if (!strikeMatch) continue;
+    const strike = parseFloat(strikeMatch[1]);
+    
+    // Find the index of the strike cell
+    const strikeIndex = cells.indexOf(strikeCell);
+    if (strikeIndex === -1) continue;
+    
+    // Calls are before strike, Puts are after
+    // Expected order for calls (from left): Bid IV, Ask IV, Intr, Time, Rho, Vega, Theta, Gamma, Delta, Price, Ask, Bid, Volume
+    // Then Strike, IV (middle)
+    // Then Puts: Volume, Bid, Ask, Price, Delta, Gamma, Theta, Vega, Rho, Time, Intr, Ask IV, Bid IV
+    
+    try {
+      // Parse Call option (cells before strike)
+      if (strikeIndex >= 13) {
+        const callCells = cells.slice(0, strikeIndex);
+        const call: OptionContract = {
           strike,
-          type: inPuts ? 'Put' : 'Call',
+          type: 'Call',
           symbol: '',
-          last: numbers[1] || '0',
-          change: '0',
-          bid: numbers[2] || '0',
-          ask: numbers[3] || '0',
-          volume: numbers[4] || '0',
-          openInterest: numbers[5] || '0',
-          iv: 0,
-          delta: 0,
-          gamma: 0,
-          theta: 0,
-          vega: 0,
+          bidIv: parseFloat(callCells[0]) || 0,
+          askIv: parseFloat(callCells[1]) || 0,
+          intrinsicValue: parseFloat(callCells[2]) || 0,
+          timeValue: parseFloat(callCells[3]) || 0,
+          rho: parseFloat(callCells[4]) || 0,
+          vega: parseFloat(callCells[5]) || 0,
+          theta: parseFloat(callCells[6]) || 0,
+          gamma: parseFloat(callCells[7]) || 0,
+          delta: parseFloat(callCells[8]) || 0,
+          last: callCells[9] || '0',
+          ask: callCells[10] || '0',
+          bid: callCells[11] || '0',
+          volume: callCells[12] || '0',
+          iv: (parseFloat(callCells[0]) + parseFloat(callCells[1])) / 2 || 0,
         };
-
-        if (inPuts) {
-          result.puts.push(option);
-        } else if (inCalls) {
-          result.calls.push(option);
+        
+        if (call.delta !== 0 || call.last !== '0') {
+          result.calls.push(call);
         }
       }
+      
+      // Parse Put option (cells after strike + IV)
+      // Skip 2 cells after strike (Strike repeated + IV)
+      const putStartIndex = strikeIndex + 2;
+      if (cells.length > putStartIndex + 13) {
+        const putCells = cells.slice(putStartIndex);
+        const put: OptionContract = {
+          strike,
+          type: 'Put',
+          symbol: '',
+          volume: putCells[0] || '0',
+          bid: putCells[1] || '0',
+          ask: putCells[2] || '0',
+          last: putCells[3] || '0',
+          delta: parseFloat(putCells[4]) || 0,
+          gamma: parseFloat(putCells[5]) || 0,
+          theta: parseFloat(putCells[6]) || 0,
+          vega: parseFloat(putCells[7]) || 0,
+          rho: parseFloat(putCells[8]) || 0,
+          timeValue: parseFloat(putCells[9]) || 0,
+          intrinsicValue: parseFloat(putCells[10]) || 0,
+          askIv: parseFloat(putCells[11]) || 0,
+          bidIv: parseFloat(putCells[12]) || 0,
+          iv: (parseFloat(putCells[11]) + parseFloat(putCells[12])) / 2 || 0,
+        };
+        
+        if (put.delta !== 0 || put.last !== '0') {
+          result.puts.push(put);
+        }
+      }
+    } catch (e) {
+      console.error('Error parsing row:', e);
     }
   }
+
+  // Sort by strike
+  result.calls.sort((a, b) => a.strike - b.strike);
+  result.puts.sort((a, b) => a.strike - b.strike);
 
   return result;
 }
