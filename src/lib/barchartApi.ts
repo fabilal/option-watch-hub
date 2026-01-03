@@ -49,9 +49,19 @@ interface ScrapeFuturesResponse {
   retryAfterSeconds?: number;
 }
 
+interface ScrapeMaturitiesResponse {
+  success: boolean;
+  symbol: string;
+  maturities: Maturity[];
+  error?: string;
+  code?: 'RATE_LIMIT' | 'SCRAPE_FAILED';
+  retryAfterSeconds?: number;
+}
+
 const optionsInflight = new Map<string, Promise<OptionsChain | null>>();
 const symbolsInflight = new Map<string, Promise<CommoditySymbol[]>>();
 const futuresInflight = new Map<string, Promise<FuturesPricesData | null>>();
+const maturitiesInflight = new Map<string, Promise<Maturity[]>>();
 
 export async function fetchOptionsData(
   symbol: CommoditySymbol,
@@ -119,6 +129,45 @@ export async function fetchOptionsData(
     return await promise;
   } finally {
     optionsInflight.delete(requestKey);
+  }
+}
+
+export async function fetchAvailableMaturities(symbol: CommoditySymbol): Promise<Maturity[]> {
+  const requestKey = `maturities:${symbol.baseSymbol}`;
+  const existing = maturitiesInflight.get(requestKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    console.log(`Fetching available maturities for ${symbol.baseSymbol}`);
+
+    const { data, error } = await supabase.functions.invoke('scrape-barchart-maturities', {
+      body: { symbol: symbol.baseSymbol },
+    });
+
+    if (error) {
+      console.error('Supabase function error:', error);
+      throw new Error(error.message);
+    }
+
+    const response = data as ScrapeMaturitiesResponse;
+
+    if (!response.success) {
+      if (response.code === 'RATE_LIMIT') {
+        const retry = response.retryAfterSeconds ?? 30;
+        throw new Error(`Limite de requêtes atteinte. Réessaie dans ~${retry}s.`);
+      }
+      throw new Error(response.error || 'Failed to scrape maturities');
+    }
+
+    return Array.isArray(response.maturities) ? response.maturities : [];
+  })();
+
+  maturitiesInflight.set(requestKey, promise);
+
+  try {
+    return await promise;
+  } finally {
+    maturitiesInflight.delete(requestKey);
   }
 }
 

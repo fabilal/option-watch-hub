@@ -12,9 +12,10 @@ interface MaturitySelectorProps {
   maturities: Maturity[];
   selected: Maturity | null;
   onSelect: (maturity: Maturity) => void;
+  disabled?: boolean;
 }
 
-export function MaturitySelector({ maturities, selected, onSelect }: MaturitySelectorProps) {
+export function MaturitySelector({ maturities, selected, onSelect, disabled }: MaturitySelectorProps) {
   return (
     <Select
       value={selected?.code || ""}
@@ -22,6 +23,7 @@ export function MaturitySelector({ maturities, selected, onSelect }: MaturitySel
         const maturity = maturities.find((m) => m.code === value);
         if (maturity) onSelect(maturity);
       }}
+      disabled={disabled}
     >
       <SelectTrigger className="w-[200px] bg-card border-border hover:border-primary/50 transition-colors">
         <div className="flex items-center gap-2">
@@ -29,7 +31,7 @@ export function MaturitySelector({ maturities, selected, onSelect }: MaturitySel
           <SelectValue placeholder="Select maturity" />
         </div>
       </SelectTrigger>
-      <SelectContent className="bg-popover border-border max-h-[300px]">
+      <SelectContent className="bg-popover border-border max-h-[300px] z-50 shadow-lg">
         {maturities.map((maturity) => (
           <SelectItem
             key={maturity.code}
