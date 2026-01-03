@@ -15,15 +15,10 @@ interface OptionContract {
   ask: string;
   volume: string;
   iv: number;
-  bidIv: number;
-  askIv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
-  rho: number;
-  intrinsicValue: number;
-  timeValue: number;
 }
 
 interface OptionsChainData {
@@ -41,8 +36,8 @@ interface CacheEntry {
   error?: string;
 }
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const NEGATIVE_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const CACHE_TTL_MS = 60 * 1000; // 1 minute for testing
+const NEGATIVE_CACHE_TTL_MS = 10 * 1000; // 10 seconds
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<OptionsChainData | null>>();
@@ -82,7 +77,6 @@ serve(async (req) => {
 
     const cacheKey = `${exchange}-${symbol}-${maturity || 'default'}`;
     
-    // Check cache
     const cached = getFromCache(cacheKey);
     if (cached !== undefined) {
       console.log(`Cache hit for ${cacheKey}`);
@@ -92,7 +86,6 @@ serve(async (req) => {
       );
     }
 
-    // Check inflight
     if (inflight.has(cacheKey)) {
       console.log(`Waiting for inflight request: ${cacheKey}`);
       const result = await inflight.get(cacheKey);
@@ -102,9 +95,9 @@ serve(async (req) => {
       );
     }
 
-    // Build URL
-    let url = `https://www.tradingview.com/symbols/${exchange}-${symbol}/options-chain/`;
-    console.log(`Scraping TradingView options: ${url}`);
+    // Use the new options chain URL format
+    const url = `https://fr.tradingview.com/options/chain/${exchange}-${symbol}/`;
+    console.log(`Scraping TradingView options chain: ${url}`);
 
     const scrapePromise = (async (): Promise<OptionsChainData | null> => {
       try {
@@ -116,9 +109,9 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: ['markdown'],
+            formats: ['markdown', 'html'],
             onlyMainContent: true,
-            waitFor: 5000,
+            waitFor: 8000,
           }),
         });
 
@@ -135,9 +128,13 @@ serve(async (req) => {
         }
 
         const markdown = data.data?.markdown || data.markdown || '';
-        console.log('Markdown length:', markdown.length);
+        const html = data.data?.html || data.html || '';
+        console.log('Markdown length:', markdown.length, 'HTML length:', html.length);
         
-        const optionsData = parseOptionsFromMarkdown(markdown, symbol);
+        // Log first 2000 chars of markdown for debugging
+        console.log('Markdown preview:', markdown.substring(0, 2000));
+        
+        const optionsData = parseOptionsChain(markdown, html, symbol, exchange);
         console.log(`Parsed: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts, ${optionsData.maturities.length} maturities`);
 
         cache.set(cacheKey, { 
@@ -176,7 +173,7 @@ serve(async (req) => {
   }
 });
 
-function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChainData {
+function parseOptionsChain(markdown: string, html: string, symbol: string, exchange: string): OptionsChainData {
   const result: OptionsChainData = {
     underlyingSymbol: symbol,
     underlyingPrice: '0',
@@ -186,120 +183,162 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
     puts: [],
   };
 
+  // Parse maturities from the date selector
+  const months = ['janv', 'févr', 'mars', 'avr', 'mai', 'juin', 'juil', 'août', 'sept', 'oct', 'nov', 'déc'];
+  const monthPattern = new RegExp(`(${months.join('|')})\\.?\\s*(?:'?(\\d{2}))?`, 'gi');
+  const foundMaturities: string[] = [];
+  let monthMatch;
+  
+  while ((monthMatch = monthPattern.exec(markdown)) !== null) {
+    const month = monthMatch[1].toLowerCase();
+    const year = monthMatch[2] || '';
+    const maturity = year ? `${month} '${year}` : month;
+    if (!foundMaturities.includes(maturity)) {
+      foundMaturities.push(maturity);
+    }
+  }
+  result.maturities = foundMaturities.slice(0, 30);
+
+  // Parse the options table
+  // Header: Bid IV, % | Ask IV, % | Valeur intr. | Valeur temps | Rho | Vega | Theta | Gamma | Delta | Prix | Demande | Offre | Volume | Strike | IV, % | Volume | Offre | Demande | Prix | Delta | Gamma | Theta | Vega | Rho | Valeur temps | Valeur intr. | Ask IV, % | Bid IV, %
+  // Example row: | 21,56 | 22,14 | 21,90 | 97,20 | 1,72 | 4,67 | −1,95 | 0,0015 | 0,56 | 119,1 | 121,4 | 118,7 | — | 4 3404 340 | 21,1 | — | 84,6 | 86,5 | 86,4 | −0,44 | 0,0015 | −1,83 | 4,67 | −1,47 | 86,40 | 0,00 | 21,66 | 21,26 |
+  
   const lines = markdown.split('\n');
+  let foundDataRow = false;
   
-  // Extract underlying price - look for pattern like "57.33DUSD" or "57.33USD"
-  const priceMatch = markdown.match(/(\d+\.\d+)\s*D?USD/);
-  if (priceMatch) {
-    result.underlyingPrice = priceMatch[1];
-  }
-
-  // Extract maturities - look for patterns like "Jan '26", "Feb", "Mar '27", etc
-  const maturityPattern = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s*'?\d{2})?/g;
-  const foundMaturities = new Set<string>();
-  let match;
-  while ((match = maturityPattern.exec(markdown)) !== null) {
-    foundMaturities.add(match[0]);
-  }
-  result.maturities = Array.from(foundMaturities).slice(0, 24);
-
-  // Find the underlying contract info (e.g., "CLH2026 57.13")
-  const contractMatch = markdown.match(/([A-Z]{2,4}[A-Z]\d{4})\s+(\d+\.\d+)/);
-  if (contractMatch) {
-    result.selectedMaturity = contractMatch[1];
-    result.underlyingPrice = contractMatch[2];
-  }
-
-  // Parse options table
-  // Table format: Bid IV | Ask IV | Intr. value | Time value | Rho | Vega | Theta | Gamma | Delta | Price | Ask | Bid | Volume | Strike | IV | Volume | Bid | Ask | Price | Delta | Gamma | Theta | Vega | Rho | Time value | Intr. value | Ask IV | Bid IV
-  
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
     if (!line.startsWith('|')) continue;
-    if (line.includes('Strike') || line.includes('---')) continue;
+    if (line.includes('---')) continue;
+    if (line.includes('Bid IV') || line.includes('Strike') || line.includes('Calls')) continue;
     
-    const cells = line.split('|').map(c => c.trim()).filter(Boolean);
+    const cells = line.split('|')
+      .map(c => c.trim())
+      .filter(c => c.length > 0);
     
-    // Need at least 28 cells for full options row (14 for calls + strike + IV + 14 for puts)
-    // But we also see rows with strike like "56.0056.00" in the middle
+    // Need at least 20 cells for a data row
+    if (cells.length < 20) continue;
     
-    // Try to find a row with strike price pattern (e.g., 56.0056.00 or just numbers)
-    const strikeCell = cells.find(c => /^\d+\.\d+\d+\.\d+$/.test(c) || /^\d+\.\d+$/.test(c));
-    if (!strikeCell) continue;
+    // Find strike cell - it has format like "4 3404 340" which is "4 340" (4340) repeated twice
+    // Pattern variations: "4 3404 340", "4340 4340", "4 340 4 340"
+    let strikeIndex = -1;
+    let strikeValue = 0;
     
-    // Extract strike price
-    const strikeMatch = strikeCell.match(/^(\d+\.\d+)/);
-    if (!strikeMatch) continue;
-    const strike = parseFloat(strikeMatch[1]);
-    
-    // Find the index of the strike cell
-    const strikeIndex = cells.indexOf(strikeCell);
-    if (strikeIndex === -1) continue;
-    
-    // Calls are before strike, Puts are after
-    // Expected order for calls (from left): Bid IV, Ask IV, Intr, Time, Rho, Vega, Theta, Gamma, Delta, Price, Ask, Bid, Volume
-    // Then Strike, IV (middle)
-    // Then Puts: Volume, Bid, Ask, Price, Delta, Gamma, Theta, Vega, Rho, Time, Intr, Ask IV, Bid IV
-    
-    try {
-      // Parse Call option (cells before strike)
-      if (strikeIndex >= 13) {
-        const callCells = cells.slice(0, strikeIndex);
-        const call: OptionContract = {
-          strike,
-          type: 'Call',
-          symbol: '',
-          bidIv: parseFloat(callCells[0]) || 0,
-          askIv: parseFloat(callCells[1]) || 0,
-          intrinsicValue: parseFloat(callCells[2]) || 0,
-          timeValue: parseFloat(callCells[3]) || 0,
-          rho: parseFloat(callCells[4]) || 0,
-          vega: parseFloat(callCells[5]) || 0,
-          theta: parseFloat(callCells[6]) || 0,
-          gamma: parseFloat(callCells[7]) || 0,
-          delta: parseFloat(callCells[8]) || 0,
-          last: callCells[9] || '0',
-          ask: callCells[10] || '0',
-          bid: callCells[11] || '0',
-          volume: callCells[12] || '0',
-          iv: (parseFloat(callCells[0]) + parseFloat(callCells[1])) / 2 || 0,
-        };
-        
-        if (call.delta !== 0 || call.last !== '0') {
-          result.calls.push(call);
+    for (let j = 0; j < cells.length; j++) {
+      const cell = cells[j];
+      
+      // Pattern 1: "4 3404 340" -> matches "X XXXY YYY" (may have non-breaking spaces)
+      // First normalize all whitespace (including nbsp \u00a0)
+      const normalizedCell = cell.replace(/[\s\u00a0]+/g, ' ');
+      let strikeMatch = normalizedCell.match(/^(\d+) (\d{3})(\d+) (\d{3})$/);
+      if (strikeMatch) {
+        const strike = parseInt(strikeMatch[1] + strikeMatch[2], 10);
+        if (strike > 10 && strike < 100000) {
+          strikeIndex = j;
+          strikeValue = strike;
+          if (!foundDataRow) {
+            console.log(`Found strike pattern 1: "${cell}" -> "${normalizedCell}" -> ${strike} at index ${j}`);
+            foundDataRow = true;
+          }
+          break;
         }
       }
       
-      // Parse Put option (cells after strike + IV)
-      // Skip 2 cells after strike (Strike repeated + IV)
-      const putStartIndex = strikeIndex + 2;
-      if (cells.length > putStartIndex + 13) {
-        const putCells = cells.slice(putStartIndex);
-        const put: OptionContract = {
-          strike,
-          type: 'Put',
-          symbol: '',
-          volume: putCells[0] || '0',
-          bid: putCells[1] || '0',
-          ask: putCells[2] || '0',
-          last: putCells[3] || '0',
-          delta: parseFloat(putCells[4]) || 0,
-          gamma: parseFloat(putCells[5]) || 0,
-          theta: parseFloat(putCells[6]) || 0,
-          vega: parseFloat(putCells[7]) || 0,
-          rho: parseFloat(putCells[8]) || 0,
-          timeValue: parseFloat(putCells[9]) || 0,
-          intrinsicValue: parseFloat(putCells[10]) || 0,
-          askIv: parseFloat(putCells[11]) || 0,
-          bidIv: parseFloat(putCells[12]) || 0,
-          iv: (parseFloat(putCells[11]) + parseFloat(putCells[12])) / 2 || 0,
-        };
-        
-        if (put.delta !== 0 || put.last !== '0') {
-          result.puts.push(put);
+      // Pattern 2: "4340 4340" -> same number repeated with space
+      strikeMatch = normalizedCell.match(/^(\d+) (\d+)$/);
+      if (strikeMatch && strikeMatch[1] === strikeMatch[2]) {
+        const strike = parseInt(strikeMatch[1], 10);
+        if (strike > 10 && strike < 100000) {
+          strikeIndex = j;
+          strikeValue = strike;
+          if (!foundDataRow) {
+            console.log(`Found strike pattern 2: "${cell}" -> ${strike} at index ${j}`);
+            foundDataRow = true;
+          }
+          break;
         }
       }
-    } catch (e) {
-      console.error('Error parsing row:', e);
+      
+      // Pattern 3: "4 340 4 340" -> number with spaces repeated
+      strikeMatch = normalizedCell.match(/^(\d+ \d+) (\d+ \d+)$/);
+      if (strikeMatch) {
+        const first = strikeMatch[1].replace(/ /g, '');
+        const second = strikeMatch[2].replace(/ /g, '');
+        if (first === second) {
+          const strike = parseInt(first, 10);
+          if (strike > 10 && strike < 100000) {
+            strikeIndex = j;
+            strikeValue = strike;
+            if (!foundDataRow) {
+              console.log(`Found strike pattern 3: "${cell}" -> ${strike} at index ${j}`);
+              foundDataRow = true;
+            }
+            break;
+          }
+        }
+      }
+    }
+    
+    if (strikeIndex === -1) continue;
+    
+    console.log(`Row: strikeIndex=${strikeIndex}, strikeValue=${strikeValue}, cells.length=${cells.length}`);
+    
+    // Call columns (before strike): Bid IV, Ask IV, Intr, Time, Rho, Vega, Theta, Gamma, Delta, Prix, Demande, Offre, Volume
+    // Index:                         0       1       2     3     4    5     6      7      8      9     10       11     12
+    if (strikeIndex >= 13) {
+      const delta = parseNum(cells[8]);
+      const last = cells[9] || '0';
+      console.log(`Call: delta=${delta}, last=${last}, cells[0]=${cells[0]}, cells[8]=${cells[8]}, cells[9]=${cells[9]}`);
+      
+      const call: OptionContract = {
+        strike: strikeValue,
+        type: 'Call',
+        symbol: '',
+        iv: (parseNum(cells[0]) + parseNum(cells[1])) / 2,
+        delta: delta,
+        gamma: parseNum(cells[7]),
+        theta: parseNum(cells[6]),
+        vega: parseNum(cells[5]),
+        last: last,
+        ask: cells[10] || '0',
+        bid: cells[11] || '0',
+        volume: cells[12] === '—' ? '0' : cells[12] || '0',
+      };
+      
+      // Include call if we have any valid data
+      if (call.delta !== 0 || parseNum(call.last) > 0) {
+        result.calls.push(call);
+      }
+    }
+    
+    // IV is after strike
+    const ivIndex = strikeIndex + 1;
+    const ivValue = parseNum(cells[ivIndex]);
+    
+    // Put columns (after IV): Volume, Offre, Demande, Prix, Delta, Gamma, Theta, Vega, Rho, Time, Intr, Ask IV, Bid IV
+    // Index relative to ivIndex+1: 0       1     2        3     4      5      6     7    8    9     10    11      12
+    const putStartIndex = ivIndex + 1;
+    if (cells.length > putStartIndex + 8) {
+      const putCells = cells.slice(putStartIndex);
+      const put: OptionContract = {
+        strike: strikeValue,
+        type: 'Put',
+        symbol: '',
+        volume: putCells[0] === '—' ? '0' : putCells[0] || '0',
+        bid: putCells[1] || '0', // Offre
+        ask: putCells[2] || '0', // Demande
+        last: putCells[3] || '0', // Prix
+        delta: parseNum(putCells[4]),
+        gamma: parseNum(putCells[5]),
+        theta: parseNum(putCells[6]),
+        vega: parseNum(putCells[7]),
+        iv: ivValue,
+      };
+      
+      if (put.delta !== 0 || parseNum(put.last) > 0) {
+        result.puts.push(put);
+      }
     }
   }
 
@@ -308,4 +347,12 @@ function parseOptionsFromMarkdown(markdown: string, symbol: string): OptionsChai
   result.puts.sort((a, b) => a.strike - b.strike);
 
   return result;
+}
+
+function parseNum(val: string): number {
+  if (!val || val === '—' || val === '-' || val === '' || val === '−') return 0;
+  // Handle French number format and minus sign: "−1,95" -> -1.95
+  const cleaned = val.replace(/\s/g, '').replace(',', '.').replace('−', '-');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : num;
 }

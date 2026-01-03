@@ -75,9 +75,6 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
         <TableCell className="text-right tabular-nums text-muted-foreground">
           {formatGreek(opt.vega)}
         </TableCell>
-        <TableCell className="text-right tabular-nums text-muted-foreground">
-          {formatGreek(opt.rho)}
-        </TableCell>
       </TableRow>
     ));
   };
@@ -107,7 +104,6 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
                 <TableHead className="font-semibold text-right">Γ</TableHead>
                 <TableHead className="font-semibold text-right">Θ</TableHead>
                 <TableHead className="font-semibold text-right">V</TableHead>
-                <TableHead className="font-semibold text-right">ρ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -115,7 +111,7 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
               {renderOptions(displayPuts, 'Put')}
               {displayCalls.length === 0 && displayPuts.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
                     Aucune donnée d'options disponible
                   </TableCell>
                 </TableRow>
