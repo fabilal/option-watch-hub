@@ -91,21 +91,32 @@ export default function TradingView() {
     }
   }, [symbol, toast]);
 
-  // Load options data when symbol changes
+  // Load options data (and maturities) when needed
   const loadOptions = useCallback(async (maturity?: string) => {
     if (!symbol) return;
 
     setIsLoadingOptions(true);
     setError(null);
+
     try {
-      const data = await fetchTVOptions(symbol, maturity);
-      setOptions(data);
-      
-      // Set maturities from response
-      if (data && data.maturities.length > 0 && !selectedMaturity) {
-        setSelectedMaturity(data.maturities[0]);
+      // We use the futures contracts list as “maturities” for options.
+      // TradingView options chains are typically tied to a specific contract (e.g. GCG2026).
+      let contracts = futures;
+
+      if (contracts.length === 0) {
+        contracts = await fetchTVFutures(symbol);
+        setFutures(contracts);
       }
-      
+
+      const maturityToUse = maturity || selectedMaturity || contracts[0]?.symbol;
+
+      if (maturityToUse) {
+        setSelectedMaturity(maturityToUse);
+      }
+
+      const data = await fetchTVOptions(symbol, maturityToUse);
+      setOptions(data);
+
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options chargées",
@@ -123,7 +134,7 @@ export default function TradingView() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast, selectedMaturity]);
+  }, [symbol, toast, selectedMaturity, futures]);
 
   // Load data when symbol changes
   useEffect(() => {
@@ -180,11 +191,11 @@ export default function TradingView() {
               disabled={isLoadingSymbols}
             />
             
-            {/* Show maturity selector only for options tab */}
-            {activeTab === "options" && options && options.maturities.length > 0 && (
+            {/* Maturity selector (based on futures contracts) */}
+            {activeTab === "options" && futures.length > 0 && (
               <TVMaturitySelector
-                maturities={options.maturities}
-                selected={selectedMaturity || options.maturities[0]}
+                maturities={futures.map((c) => c.symbol)}
+                selected={selectedMaturity || futures[0].symbol}
                 onSelect={handleMaturityChange}
                 disabled={isLoadingOptions}
               />
@@ -264,7 +275,7 @@ export default function TradingView() {
                     <p className="text-muted-foreground">
                       {symbol?.exchange} • Chaîne d'Options
                       {options.underlyingPrice && options.underlyingPrice !== '0' && ` • Prix sous-jacent: $${options.underlyingPrice}`}
-                      {options.selectedMaturity && ` • ${options.selectedMaturity}`}
+                      {selectedMaturity && ` • ${selectedMaturity}`}
                     </p>
                   </div>
                 </div>

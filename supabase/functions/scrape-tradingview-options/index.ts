@@ -103,8 +103,14 @@ serve(async (req) => {
       );
     }
 
-    // Build URL - use French version for better data
-    const url = `https://fr.tradingview.com/symbols/${exchange}-${symbol}/options-chain/`;
+    // Build URL
+    // If a maturity is provided, we treat it as the specific futures contract symbol (e.g. GCG2026)
+    // and load the options chain page for that contract.
+    const targetSymbol = (typeof maturity === 'string' && maturity.trim().length > 0)
+      ? maturity.trim()
+      : symbol;
+
+    const url = `https://fr.tradingview.com/symbols/${exchange}-${targetSymbol}/options-chain/`;
     console.log(`Scraping TradingView options: ${url}`);
 
     const scrapePromise = (async (): Promise<OptionsChainData | null> => {
@@ -118,8 +124,10 @@ serve(async (req) => {
           body: JSON.stringify({
             url,
             formats: ['markdown'],
-            onlyMainContent: true,
-            waitFor: 5000,
+            // Options table is often loaded outside “main content”; keep full page.
+            onlyMainContent: false,
+            // Give the page more time to render.
+            waitFor: 12000,
           }),
         });
 
