@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import { Header } from "@/components/Header";
 import { TVCategorySelector } from "@/components/tradingview/TVCategorySelector";
 import { TVSymbolSelector } from "@/components/tradingview/TVSymbolSelector";
+import { TVMaturitySelector } from "@/components/tradingview/TVMaturitySelector";
 import { TVFuturesTable } from "@/components/tradingview/TVFuturesTable";
 import { TVOptionsTable } from "@/components/tradingview/TVOptionsTable";
+import { TVOptionsStats } from "@/components/tradingview/TVOptionsStats";
 import { LoadingSkeleton } from "@/components/LoadingSkeleton";
 import { EmptyState } from "@/components/EmptyState";
 
@@ -33,6 +35,7 @@ export default function TradingView() {
   const [isLoadingFutures, setIsLoadingFutures] = useState(false);
 
   const [options, setOptions] = useState<TVOptionsChain | null>(null);
+  const [selectedMaturity, setSelectedMaturity] = useState<string | null>(null);
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
 
   const [activeTab, setActiveTab] = useState<"futures" | "options">("futures");
@@ -89,14 +92,20 @@ export default function TradingView() {
   }, [symbol, toast]);
 
   // Load options data when symbol changes
-  const loadOptions = useCallback(async () => {
+  const loadOptions = useCallback(async (maturity?: string) => {
     if (!symbol) return;
 
     setIsLoadingOptions(true);
     setError(null);
     try {
-      const data = await fetchTVOptions(symbol);
+      const data = await fetchTVOptions(symbol, maturity);
       setOptions(data);
+      
+      // Set maturities from response
+      if (data && data.maturities.length > 0 && !selectedMaturity) {
+        setSelectedMaturity(data.maturities[0]);
+      }
+      
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options chargées",
@@ -114,7 +123,7 @@ export default function TradingView() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast]);
+  }, [symbol, toast, selectedMaturity]);
 
   // Load data when symbol changes
   useEffect(() => {
@@ -127,11 +136,17 @@ export default function TradingView() {
     }
   }, [symbol, activeTab, loadFutures, loadOptions]);
 
+  // Reload options when maturity changes
+  const handleMaturityChange = (maturity: string) => {
+    setSelectedMaturity(maturity);
+    loadOptions(maturity);
+  };
+
   const handleRefresh = () => {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions();
+      loadOptions(selectedMaturity || undefined);
     }
   };
 
@@ -164,6 +179,17 @@ export default function TradingView() {
               onSelect={setSymbol}
               disabled={isLoadingSymbols}
             />
+            
+            {/* Show maturity selector only for options tab */}
+            {activeTab === "options" && options && options.maturities.length > 0 && (
+              <TVMaturitySelector
+                maturities={options.maturities}
+                selected={selectedMaturity || options.maturities[0]}
+                onSelect={handleMaturityChange}
+                disabled={isLoadingOptions}
+              />
+            )}
+            
             <div className="flex items-center gap-2 ml-auto">
               <Button
                 variant="outline"
@@ -237,10 +263,16 @@ export default function TradingView() {
                     </h2>
                     <p className="text-muted-foreground">
                       {symbol?.exchange} • Chaîne d'Options
-                      {options.underlyingPrice && ` • Prix: ${options.underlyingPrice}`}
+                      {options.underlyingPrice && options.underlyingPrice !== '0' && ` • Prix sous-jacent: $${options.underlyingPrice}`}
+                      {options.selectedMaturity && ` • ${options.selectedMaturity}`}
                     </p>
                   </div>
                 </div>
+                
+                {/* Stats Cards */}
+                <TVOptionsStats options={options} />
+                
+                {/* Options Table */}
                 <TVOptionsTable calls={options.calls} puts={options.puts} />
               </div>
             ) : !isLoadingOptions && !error ? (

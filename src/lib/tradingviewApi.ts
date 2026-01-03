@@ -35,16 +35,19 @@ export interface TVOptionContract {
   type: 'Call' | 'Put';
   symbol: string;
   last: string;
-  change: string;
   bid: string;
   ask: string;
   volume: string;
-  openInterest: string;
   iv: number;
+  bidIv: number;
+  askIv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
+  rho: number;
+  intrinsicValue: number;
+  timeValue: number;
 }
 
 export interface TVOptionsChain {

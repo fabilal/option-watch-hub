@@ -20,12 +20,18 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
 
   const formatIV = (iv: number) => {
     if (!iv || iv === 0) return '-';
-    return `${(iv * 100).toFixed(1)}%`;
+    return `${iv.toFixed(1)}%`;
   };
 
-  const formatGreek = (value: number, decimals: number = 4) => {
-    if (!value || value === 0) return '-';
+  const formatGreek = (value: number, decimals: number = 3) => {
+    if (value === undefined || value === null) return '-';
+    if (value === 0) return '0';
     return value.toFixed(decimals);
+  };
+
+  const formatPrice = (value: string | number) => {
+    if (!value || value === '0' || value === 0) return '-';
+    return typeof value === 'number' ? value.toFixed(2) : value;
   };
 
   const renderOptions = (options: TVOptionContract[], type: 'Call' | 'Put') => {
@@ -40,37 +46,37 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
           {type}
         </TableCell>
         <TableCell className="font-mono font-semibold">
-          {opt.strike}
+          {opt.strike.toFixed(2)}
         </TableCell>
         <TableCell className="text-right tabular-nums font-semibold">
-          {opt.last || '-'}
+          {formatPrice(opt.last)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
-          {opt.bid || '-'}
+          {formatPrice(opt.bid)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
-          {opt.ask || '-'}
+          {formatPrice(opt.ask)}
         </TableCell>
         <TableCell className="text-right tabular-nums">
           {opt.volume || '-'}
         </TableCell>
-        <TableCell className="text-right tabular-nums text-muted-foreground">
-          {opt.openInterest || '-'}
-        </TableCell>
-        <TableCell className="text-right tabular-nums text-primary">
+        <TableCell className="text-right tabular-nums text-primary font-medium">
           {formatIV(opt.iv)}
         </TableCell>
         <TableCell className="text-right tabular-nums">
-          {formatGreek(opt.delta, 3)}
+          {formatGreek(opt.delta)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
-          {formatGreek(opt.gamma)}
+          {formatGreek(opt.gamma, 4)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
           {formatGreek(opt.theta)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
           {formatGreek(opt.vega)}
+        </TableCell>
+        <TableCell className="text-right tabular-nums text-muted-foreground">
+          {formatGreek(opt.rho)}
         </TableCell>
       </TableRow>
     ));
@@ -86,35 +92,37 @@ export function TVOptionsTable({ calls, puts }: TVOptionsTableProps) {
       </div>
       
       <div className="rounded-lg border border-border overflow-hidden bg-card">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-muted/50">
-              <TableHead className="font-semibold">Type</TableHead>
-              <TableHead className="font-semibold">Strike</TableHead>
-              <TableHead className="font-semibold text-right">Dernier</TableHead>
-              <TableHead className="font-semibold text-right">Bid</TableHead>
-              <TableHead className="font-semibold text-right">Ask</TableHead>
-              <TableHead className="font-semibold text-right">Volume</TableHead>
-              <TableHead className="font-semibold text-right">OI</TableHead>
-              <TableHead className="font-semibold text-right">IV</TableHead>
-              <TableHead className="font-semibold text-right">Δ</TableHead>
-              <TableHead className="font-semibold text-right">Γ</TableHead>
-              <TableHead className="font-semibold text-right">Θ</TableHead>
-              <TableHead className="font-semibold text-right">V</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {renderOptions(displayCalls, 'Call')}
-            {renderOptions(displayPuts, 'Put')}
-            {displayCalls.length === 0 && displayPuts.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
-                  Aucune donnée d'options disponible
-                </TableCell>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-muted/50">
+                <TableHead className="font-semibold">Type</TableHead>
+                <TableHead className="font-semibold">Strike</TableHead>
+                <TableHead className="font-semibold text-right">Prix</TableHead>
+                <TableHead className="font-semibold text-right">Bid</TableHead>
+                <TableHead className="font-semibold text-right">Ask</TableHead>
+                <TableHead className="font-semibold text-right">Vol</TableHead>
+                <TableHead className="font-semibold text-right">IV</TableHead>
+                <TableHead className="font-semibold text-right">Δ</TableHead>
+                <TableHead className="font-semibold text-right">Γ</TableHead>
+                <TableHead className="font-semibold text-right">Θ</TableHead>
+                <TableHead className="font-semibold text-right">V</TableHead>
+                <TableHead className="font-semibold text-right">ρ</TableHead>
               </TableRow>
-            )}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {renderOptions(displayCalls, 'Call')}
+              {renderOptions(displayPuts, 'Put')}
+              {displayCalls.length === 0 && displayPuts.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={12} className="text-center py-8 text-muted-foreground">
+                    Aucune donnée d'options disponible
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </div>
     </div>
   );
