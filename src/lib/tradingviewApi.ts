@@ -39,15 +39,10 @@ export interface TVOptionContract {
   ask: string;
   volume: string;
   iv: number;
-  bidIv: number;
-  askIv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
-  rho: number;
-  intrinsicValue: number;
-  timeValue: number;
 }
 
 export interface TVOptionsChain {
