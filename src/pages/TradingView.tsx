@@ -100,12 +100,17 @@ export default function TradingView() {
     try {
       const data = await fetchTVOptions(symbol, maturity);
       setOptions(data);
-      
-      // Set maturities from response
-      if (data && data.maturities.length > 0 && !selectedMaturity) {
-        setSelectedMaturity(data.maturities[0]);
+
+      // Ensure selected maturity stays valid for the current symbol
+      if (data?.maturities?.length) {
+        const next =
+          (maturity && data.maturities.includes(maturity) ? maturity : undefined) ||
+          (selectedMaturity && data.maturities.includes(selectedMaturity) ? selectedMaturity : undefined) ||
+          data.selectedMaturity ||
+          data.maturities[0];
+        if (next && next !== selectedMaturity) setSelectedMaturity(next);
       }
-      
+
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options chargées",
@@ -128,11 +133,11 @@ export default function TradingView() {
   // Load data when symbol changes
   useEffect(() => {
     if (!symbol) return;
-    
+
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions();
+      loadOptions(selectedMaturity || undefined);
     }
   }, [symbol, activeTab, loadFutures, loadOptions]);
 
