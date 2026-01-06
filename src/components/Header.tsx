@@ -49,15 +49,26 @@ export function Header() {
                 Futures
               </Link>
               <Link
-                to="/tradingview"
+                to="/commodities"
                 className={cn(
                   "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
-                  location.pathname === "/tradingview"
+                  location.pathname === "/commodities"
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted"
                 )}
               >
-                TradingView
+                Commodities
+              </Link>
+              <Link
+                to="/forex"
+                className={cn(
+                  "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
+                  location.pathname === "/forex"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                Forex
               </Link>
             </nav>
           </div>

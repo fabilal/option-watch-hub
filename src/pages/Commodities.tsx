@@ -166,10 +166,10 @@ export default function TradingView() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <TrendingUp className="w-6 h-6 text-primary" />
-            TradingView Dashboard
+            Commodities Dashboard
           </h1>
           <p className="text-muted-foreground">
-            Données futures et options en temps réel depuis TradingView
+            Futures et options sur matières premières en temps réel
           </p>
         </div>
 
@@ -291,7 +291,7 @@ export default function TradingView() {
       <footer className="border-t border-border mt-12 py-6">
         <div className="container mx-auto px-6">
           <p className="text-center text-sm text-muted-foreground">
-            Données extraites de TradingView • Futures et Options sur commodités
+            Données TradingView • Commodities - Énergie, Agriculture, Métaux
           </p>
         </div>
       </footer>

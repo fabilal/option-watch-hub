@@ -11,3 +11,21 @@ verify_jwt = false
 
 [functions.scrape-barchart-maturities]
 verify_jwt = false
+
+[functions.scrape-tradingview-symbols]
+verify_jwt = false
+
+[functions.scrape-tradingview-futures]
+verify_jwt = false
+
+[functions.scrape-tradingview-options]
+verify_jwt = false
+
+[functions.scrape-forex-symbols]
+verify_jwt = false
+
+[functions.scrape-forex-futures]
+verify_jwt = false
+
+[functions.scrape-forex-options]
+verify_jwt = false
