@@ -21,9 +21,32 @@ export interface TVForexFutures {
   rating: string;
 }
 
+export interface TVForexOptionContract {
+  strike: number;
+  type: 'Call' | 'Put';
+  symbol: string;
+  last: string;
+  change: string;
+  changePercent: string;
+  bid: string;
+  ask: string;
+  volume: string;
+  openInterest: string;
+  iv: number;
+}
+
+export interface TVForexOptionsChain {
+  underlyingSymbol: string;
+  underlyingPrice: string;
+  expirationDate: string;
+  calls: TVForexOptionContract[];
+  puts: TVForexOptionContract[];
+}
+
 // In-flight request deduplication
 const symbolsInflight = new Map<string, Promise<TVForexSymbol[]>>();
 const futuresInflight = new Map<string, Promise<TVForexFutures[]>>();
+const optionsInflight = new Map<string, Promise<TVForexOptionsChain | null>>();
 
 // Default symbols if API fails
 const DEFAULT_SYMBOLS: TVForexSymbol[] = [
@@ -43,7 +66,6 @@ const DEFAULT_SYMBOLS: TVForexSymbol[] = [
 export async function fetchTVForexSymbols(): Promise<TVForexSymbol[]> {
   const cacheKey = 'tv-forex-symbols';
   
-  // Check if request is in flight
   const existing = symbolsInflight.get(cacheKey);
   if (existing) {
     return existing;
@@ -84,7 +106,6 @@ export async function fetchTVForexSymbols(): Promise<TVForexSymbol[]> {
 export async function fetchTVForexFutures(symbol: TVForexSymbol): Promise<TVForexFutures[]> {
   const cacheKey = `tv-forex-futures-${symbol.exchange}-${symbol.symbol}`;
   
-  // Check if request is in flight
   const existing = futuresInflight.get(cacheKey);
   if (existing) {
     return existing;
@@ -119,5 +140,45 @@ export async function fetchTVForexFutures(symbol: TVForexSymbol): Promise<TVFore
   })();
 
   futuresInflight.set(cacheKey, promise);
+  return promise;
+}
+
+export async function fetchTVForexOptions(symbol: TVForexSymbol): Promise<TVForexOptionsChain | null> {
+  const cacheKey = `tv-forex-options-${symbol.exchange}-${symbol.symbol}`;
+  
+  const existing = optionsInflight.get(cacheKey);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async (): Promise<TVForexOptionsChain | null> => {
+    try {
+      console.log(`Fetching TV forex options for ${symbol.symbol}...`);
+      
+      const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
+        body: { symbol: symbol.symbol, exchange: symbol.exchange },
+      });
+
+      if (error) {
+        console.error('Edge function error:', error);
+        return null;
+      }
+
+      if (!data?.success || !data?.data) {
+        console.warn('No TV forex options returned');
+        return null;
+      }
+
+      console.log(`Fetched ${data.data.calls?.length || 0} calls, ${data.data.puts?.length || 0} puts`);
+      return data.data;
+    } catch (err) {
+      console.error('Failed to fetch TV forex options:', err);
+      return null;
+    } finally {
+      optionsInflight.delete(cacheKey);
+    }
+  })();
+
+  optionsInflight.set(cacheKey, promise);
   return promise;
 }
