@@ -9,7 +9,6 @@ const corsHeaders = {
 interface FuturesContract {
   symbol: string;
   expiration: string;
-  daysLeft: number;
   last: string;
   change: string;
   changePercent: string;
@@ -90,7 +89,7 @@ serve(async (req) => {
     const promise = (async () => {
       try {
         const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices`;
-        console.log(`[scrape-forex-futures] Scraping: ${url}`);
+        console.log(`[scrape-forex-futures] Scraping with extract: ${url}`);
 
         const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
           method: 'POST',
@@ -100,26 +99,87 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: ['markdown'],
-            waitFor: 10000,
+            formats: ['extract'],
+            extract: {
+              schema: {
+                type: 'object',
+                properties: {
+                  contracts: {
+                    type: 'array',
+                    description: 'List of all futures contracts from the table',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        symbol: { type: 'string', description: 'Contract symbol like E6H26, B6M26' },
+                        month: { type: 'string', description: 'Contract month like Jan 26, Feb 26, Mar 26' },
+                        last: { type: 'string', description: 'Last traded price' },
+                        change: { type: 'string', description: 'Price change (can be negative)' },
+                        percentChange: { type: 'string', description: 'Percent change with % sign' },
+                        open: { type: 'string', description: 'Opening price' },
+                        high: { type: 'string', description: 'High price' },
+                        low: { type: 'string', description: 'Low price' },
+                        volume: { type: 'string', description: 'Trading volume' },
+                        openInterest: { type: 'string', description: 'Open interest' },
+                      },
+                      required: ['symbol', 'last'],
+                    },
+                  },
+                },
+                required: ['contracts'],
+              },
+              prompt: `Extract all futures contracts from the price table. Each row has: contract symbol (like ${symbol}H26), month (like Jan 26), last price, change, percent change, open, high, low, volume, and open interest. Extract numeric values accurately.`,
+            },
+            waitFor: 8000,
           }),
         });
 
         if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[scrape-forex-futures] Firecrawl error: ${response.status}`, errorText);
           throw new Error(`Firecrawl error: ${response.status}`);
         }
 
         const result = await response.json();
-        const markdown = result.data?.markdown || '';
+        console.log(`[scrape-forex-futures] Raw extract result keys:`, Object.keys(result.data || {}));
         
-        const contracts = parseContractsFromMarkdown(markdown, symbol);
+        const extractedData = result.data?.extract || result.extract || {};
+        const rawContracts = extractedData.contracts || [];
+        
+        console.log(`[scrape-forex-futures] Extracted ${rawContracts.length} contracts`);
+
+        // Map to our interface
+        const contracts: FuturesContract[] = rawContracts.map((c: Record<string, string>) => ({
+          symbol: c.symbol || '',
+          expiration: c.month || '',
+          last: c.last || '',
+          change: c.change || '',
+          changePercent: c.percentChange || c.percent_change || '',
+          open: c.open || '',
+          high: c.high || '',
+          low: c.low || '',
+          volume: c.volume || '',
+          openInterest: c.openInterest || c.open_interest || '',
+        })).filter((c: FuturesContract) => c.symbol && c.last);
+
+        // Remove duplicates
+        const seen = new Set<string>();
+        const unique = contracts.filter((c: FuturesContract) => {
+          if (seen.has(c.symbol)) return false;
+          seen.add(c.symbol);
+          return true;
+        });
+
+        console.log(`[scrape-forex-futures] Final ${unique.length} unique contracts`);
+        if (unique.length > 0) {
+          console.log(`[scrape-forex-futures] Sample:`, JSON.stringify(unique[0]));
+        }
         
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 
-          data: contracts 
+          data: unique 
         });
         
-        return contracts;
+        return unique;
       } catch (error) {
         console.error(`[scrape-forex-futures] Error scraping ${cacheKey}:`, error);
         cache.set(cacheKey, { 
@@ -148,55 +208,3 @@ serve(async (req) => {
     );
   }
 });
-
-function parseContractsFromMarkdown(markdown: string, baseSymbol: string): FuturesContract[] {
-  const contracts: FuturesContract[] = [];
-  const lines = markdown.split('\n');
-  
-  // Look for table rows with contract symbols like E6H26, B6M26
-  const contractRegex = new RegExp(`\\b(${baseSymbol}[FGHJKMNQUVXZ]\\d{2})\\b`, 'g');
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const matches = line.match(contractRegex);
-    
-    if (matches && matches.length > 0) {
-      const contractSymbol = matches[0];
-      
-      // Parse the line - look for pipe-separated or whitespace-separated values
-      const parts = line.split(/[|\t]/).map(p => p.trim()).filter(Boolean);
-      
-      // Try to extract numeric values from the line
-      const numericPattern = /-?\d+\.?\d*/g;
-      const nums = line.match(numericPattern) || [];
-      
-      // Extract expiration date pattern like "Mar '26" or "Mar 2026"
-      const expirationMatch = line.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*'?\d{2,4}/i);
-      
-      contracts.push({
-        symbol: contractSymbol,
-        expiration: expirationMatch ? expirationMatch[0] : '',
-        daysLeft: 0,
-        last: nums[0] || '',
-        change: nums[1] || '',
-        changePercent: nums[2] ? `${nums[2]}%` : '',
-        open: nums[3] || '',
-        high: nums[4] || '',
-        low: nums[5] || '',
-        volume: nums[6] || '',
-        openInterest: nums[7] || '',
-      });
-    }
-  }
-  
-  // Remove duplicates
-  const seen = new Set<string>();
-  const unique = contracts.filter(c => {
-    if (seen.has(c.symbol)) return false;
-    seen.add(c.symbol);
-    return true;
-  });
-  
-  console.log(`[scrape-forex-futures] Parsed ${unique.length} contracts`);
-  return unique;
-}
