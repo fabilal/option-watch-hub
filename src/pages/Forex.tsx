@@ -7,14 +7,15 @@ import { RefreshCw, AlertCircle, DollarSign, BarChart3, TrendingUp } from "lucid
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
 import {
   fetchForexSymbols,
   fetchForexFutures,
   fetchForexOptions,
+  extractMaturitiesFromFutures,
   type ForexCategory,
   type ForexSymbol,
   type ForexFuturesContract,
+  type ForexFuturesData,
   type ForexOptionsChain,
   FOREX_CATEGORIES,
 } from "@/lib/forexApi";
@@ -33,10 +34,11 @@ export default function Forex() {
   const [symbol, setSymbol] = useState<ForexSymbol | null>(null);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
 
-  const [futures, setFutures] = useState<ForexFuturesContract[]>([]);
+  const [futuresData, setFuturesData] = useState<ForexFuturesData | null>(null);
   const [isLoadingFutures, setIsLoadingFutures] = useState(false);
 
   const [options, setOptions] = useState<ForexOptionsChain | null>(null);
+  const [maturities, setMaturities] = useState<string[]>([]);
   const [selectedMaturity, setSelectedMaturity] = useState<string | null>(null);
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
 
@@ -73,11 +75,20 @@ export default function Forex() {
     setError(null);
     try {
       const data = await fetchForexFutures(symbol);
-      setFutures(data);
-      if (data.length > 0) {
+      setFuturesData(data);
+      
+      if (data && data.futures.length > 0) {
+        // Extract maturities from futures for options selector
+        const extractedMaturities = extractMaturitiesFromFutures(data.futures);
+        setMaturities(extractedMaturities);
+        
+        if (extractedMaturities.length > 0 && !selectedMaturity) {
+          setSelectedMaturity(extractedMaturities[0]);
+        }
+        
         toast({
           title: "Données chargées",
-          description: `${data.length} contrats futures pour ${symbol.name}`,
+          description: `${data.futures.length} contrats futures pour ${symbol.name}`,
         });
       }
     } catch (err) {
@@ -91,26 +102,17 @@ export default function Forex() {
     } finally {
       setIsLoadingFutures(false);
     }
-  }, [symbol, toast]);
+  }, [symbol, toast, selectedMaturity]);
 
-  // Load options data when symbol changes
-  const loadOptions = useCallback(async (maturity?: string) => {
-    if (!symbol) return;
+  // Load options data when symbol and maturity changes
+  const loadOptions = useCallback(async (maturityCode?: string) => {
+    if (!symbol || !maturityCode) return;
 
     setIsLoadingOptions(true);
     setError(null);
     try {
-      const data = await fetchForexOptions(symbol, maturity);
+      const data = await fetchForexOptions(symbol, maturityCode);
       setOptions(data);
-
-      if (data?.maturities?.length) {
-        const next =
-          (maturity && data.maturities.includes(maturity) ? maturity : undefined) ||
-          (selectedMaturity && data.maturities.includes(selectedMaturity) ? selectedMaturity : undefined) ||
-          data.selectedMaturity ||
-          data.maturities[0];
-        if (next && next !== selectedMaturity) setSelectedMaturity(next);
-      }
 
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
@@ -129,7 +131,7 @@ export default function Forex() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast, selectedMaturity]);
+  }, [symbol, toast]);
 
   // Load data when symbol changes
   useEffect(() => {
@@ -137,26 +139,29 @@ export default function Forex() {
 
     if (activeTab === "futures") {
       loadFutures();
-    } else {
-      loadOptions(selectedMaturity || undefined);
+    } else if (selectedMaturity) {
+      loadOptions(selectedMaturity);
     }
-  }, [symbol, activeTab, loadFutures, loadOptions]);
+  }, [symbol, activeTab, loadFutures, loadOptions, selectedMaturity]);
 
   // Reload options when maturity changes
   const handleMaturityChange = (maturity: string) => {
     setSelectedMaturity(maturity);
-    loadOptions(maturity);
+    if (activeTab === "options") {
+      loadOptions(maturity);
+    }
   };
 
   const handleRefresh = () => {
     if (activeTab === "futures") {
       loadFutures();
-    } else {
-      loadOptions(selectedMaturity || undefined);
+    } else if (selectedMaturity) {
+      loadOptions(selectedMaturity);
     }
   };
 
   const isLoading = activeTab === "futures" ? isLoadingFutures : isLoadingOptions;
+  const futures = futuresData?.futures || [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -170,7 +175,7 @@ export default function Forex() {
             Forex Dashboard
           </h1>
           <p className="text-muted-foreground">
-            Futures et options sur devises en temps réel
+            Futures et options sur devises en temps réel (Barchart)
           </p>
         </div>
 
@@ -187,10 +192,10 @@ export default function Forex() {
             />
             
             {/* Show maturity selector only for options tab */}
-            {activeTab === "options" && options && options.maturities.length > 0 && (
+            {activeTab === "options" && maturities.length > 0 && (
               <ForexMaturitySelector
-                maturities={options.maturities}
-                selected={selectedMaturity || options.maturities[0]}
+                maturities={maturities}
+                selected={selectedMaturity || maturities[0]}
                 onSelect={handleMaturityChange}
                 disabled={isLoadingOptions}
               />
@@ -269,8 +274,8 @@ export default function Forex() {
                     </h2>
                     <p className="text-muted-foreground">
                       {symbol?.exchange} • Chaîne d'Options
-                      {options.underlyingPrice && options.underlyingPrice !== '0' && ` • Prix sous-jacent: $${options.underlyingPrice}`}
-                      {options.selectedMaturity && ` • ${options.selectedMaturity}`}
+                      {options.maturity && ` • ${options.maturity}`}
+                      {options.daysToExpiration > 0 && ` • ${options.daysToExpiration}j`}
                     </p>
                   </div>
                 </div>
@@ -292,7 +297,7 @@ export default function Forex() {
       <footer className="border-t border-border mt-12 py-6">
         <div className="container mx-auto px-6">
           <p className="text-center text-sm text-muted-foreground">
-            Données TradingView • Forex - Majors, Minors, Exotiques
+            Données Barchart • Forex - Majors, Minors, Exotiques
           </p>
         </div>
       </footer>
