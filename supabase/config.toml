@@ -29,3 +29,9 @@ verify_jwt = false
 
 [functions.scrape-forex-options]
 verify_jwt = false
+
+[functions.scrape-tv-forex-symbols]
+verify_jwt = false
+
+[functions.scrape-tv-forex-futures]
+verify_jwt = false
