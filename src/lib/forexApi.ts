@@ -33,23 +33,22 @@ export interface ForexFuturesContract {
 export interface ForexOptionContract {
   strike: number;
   type: 'Call' | 'Put';
-  latest: string;
+  symbol: string;
+  last: string;
   iv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
-  ivSkew: number;
-  lastTrade: string;
+  volume: string;
+  openInterest: string;
 }
 
 export interface ForexOptionsChain {
-  symbol: string;
-  name: string;
-  maturity: string;
+  underlyingSymbol: string;
+  underlyingPrice: string;
+  futuresContract: string;
   daysToExpiration: number;
-  impliedVolatility: number;
-  priceOfOptionPoint: number;
   calls: ForexOptionContract[];
   puts: ForexOptionContract[];
 }
@@ -146,13 +145,13 @@ export async function fetchForexFutures(symbol: ForexSymbol): Promise<ForexFutur
 }
 
 /**
- * Fetch Forex options chain for a symbol and maturity
+ * Fetch Forex options chain for a futures contract
+ * @param futuresContract - The full futures contract symbol (e.g., "E6H26")
  */
 export async function fetchForexOptions(
-  symbol: ForexSymbol, 
-  maturityCode: string
+  futuresContract: string
 ): Promise<ForexOptionsChain | null> {
-  const cacheKey = `${symbol.symbol}-${maturityCode}`;
+  const cacheKey = `options-${futuresContract}`;
   
   if (optionsInflight.has(cacheKey)) {
     return optionsInflight.get(cacheKey)!;
@@ -161,11 +160,7 @@ export async function fetchForexOptions(
   const promise = (async () => {
     try {
       const { data, error } = await supabase.functions.invoke('scrape-forex-options', {
-        body: { 
-          exchange: symbol.exchange || 'CME',
-          symbol: symbol.symbol,
-          maturity: maturityCode,
-        },
+        body: { futuresContract },
       });
 
       if (error) {
@@ -173,17 +168,8 @@ export async function fetchForexOptions(
         return null;
       }
 
-      if (data?.success) {
-        return {
-          symbol: data.symbol,
-          name: data.name,
-          maturity: data.maturity,
-          daysToExpiration: data.daysToExpiration,
-          impliedVolatility: data.impliedVolatility,
-          priceOfOptionPoint: data.priceOfOptionPoint,
-          calls: data.calls || [],
-          puts: data.puts || [],
-        } as ForexOptionsChain;
+      if (data?.success && data?.data) {
+        return data.data as ForexOptionsChain;
       }
 
       return null;

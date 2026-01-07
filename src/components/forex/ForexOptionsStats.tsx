@@ -25,6 +25,8 @@ export function ForexOptionsStats({ options }: ForexOptionsStatsProps) {
     ? options.puts.reduce((sum, p) => sum + Math.abs(p.delta), 0) / totalPuts
     : 0;
 
+  const avgIV = (avgCallIV + avgPutIV) / 2;
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       <Card className="p-4 bg-card border-border">
@@ -36,7 +38,7 @@ export function ForexOptionsStats({ options }: ForexOptionsStatsProps) {
           {options.daysToExpiration > 0 ? `${options.daysToExpiration}j` : '-'}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          {options.maturity || 'N/A'}
+          {options.futuresContract || 'N/A'}
         </p>
       </Card>
 
@@ -71,7 +73,7 @@ export function ForexOptionsStats({ options }: ForexOptionsStatsProps) {
           {totalCalls > 0 ? (totalPuts / totalCalls).toFixed(2) : '-'}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          IV globale: {options.impliedVolatility > 0 ? `${options.impliedVolatility.toFixed(1)}%` : '-'}
+          IV globale: {avgIV > 0 ? `${avgIV.toFixed(1)}%` : '-'}
         </p>
       </Card>
     </div>

@@ -34,6 +34,11 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
     return typeof value === 'number' ? value.toFixed(4) : value;
   };
 
+  const formatVolume = (value: string | number) => {
+    if (!value || value === '0' || value === 0) return '-';
+    return value.toString();
+  };
+
   const renderOptions = (options: ForexOptionContract[], type: 'Call' | 'Put') => {
     const typeClass = type === 'Call' ? 'text-success' : 'text-destructive';
     
@@ -49,7 +54,7 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
           {opt.strike.toFixed(4)}
         </TableCell>
         <TableCell className="text-right tabular-nums font-semibold">
-          {formatPrice(opt.latest)}
+          {formatPrice(opt.last)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-primary font-medium">
           {formatIV(opt.iv)}
@@ -67,10 +72,10 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
           {formatGreek(opt.vega)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
-          {opt.ivSkew ? `${opt.ivSkew > 0 ? '+' : ''}${opt.ivSkew.toFixed(1)}%` : '-'}
+          {formatVolume(opt.volume)}
         </TableCell>
-        <TableCell className="text-right tabular-nums text-muted-foreground text-xs">
-          {opt.lastTrade || '-'}
+        <TableCell className="text-right tabular-nums text-muted-foreground">
+          {formatVolume(opt.openInterest)}
         </TableCell>
       </TableRow>
     ));
@@ -98,8 +103,8 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
                 <TableHead className="font-semibold text-right">Γ</TableHead>
                 <TableHead className="font-semibold text-right">Θ</TableHead>
                 <TableHead className="font-semibold text-right">V</TableHead>
-                <TableHead className="font-semibold text-right">IV Skew</TableHead>
-                <TableHead className="font-semibold text-right">Dernier Trade</TableHead>
+                <TableHead className="font-semibold text-right">Volume</TableHead>
+                <TableHead className="font-semibold text-right">OI</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

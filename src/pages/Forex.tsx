@@ -186,20 +186,20 @@ export default function Forex() {
     }
   }, [symbol, toast, selectedMaturity]);
 
-  // Load options data when symbol and maturity changes
-  const loadOptions = useCallback(async (maturityCode?: string) => {
-    if (!symbol || !maturityCode) return;
+  // Load options data when futures contract is selected
+  const loadOptions = useCallback(async (futuresContract: string) => {
+    if (!futuresContract) return;
 
     setIsLoadingOptions(true);
     setError(null);
     try {
-      const data = await fetchForexOptions(symbol, maturityCode);
+      const data = await fetchForexOptions(futuresContract);
       setOptions(data);
 
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options chargées",
-          description: `${data.calls.length} calls et ${data.puts.length} puts`,
+          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${futuresContract}`,
         });
       }
     } catch (err) {
@@ -213,7 +213,9 @@ export default function Forex() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast]);
+  }, [toast]);
+
+  const futures = futuresData?.data || [];
 
   // Load data when symbol changes (Barchart)
   useEffect(() => {
@@ -221,16 +223,19 @@ export default function Forex() {
 
     if (activeTab === "futures") {
       loadFutures();
-    } else if (selectedMaturity) {
-      loadOptions(selectedMaturity);
+    } else if (selectedMaturity && futures.length > 0) {
+      // Build full futures contract from symbol + maturity (e.g., E6 + H26 = E6H26)
+      const futuresContract = `${symbol.symbol}${selectedMaturity}`;
+      loadOptions(futuresContract);
     }
-  }, [symbol, activeTab, loadFutures, loadOptions, selectedMaturity, dataSource]);
+  }, [symbol, activeTab, loadFutures, loadOptions, selectedMaturity, dataSource, futures.length]);
 
   // Reload options when maturity changes
   const handleMaturityChange = (maturity: string) => {
     setSelectedMaturity(maturity);
-    if (activeTab === "options") {
-      loadOptions(maturity);
+    if (activeTab === "options" && symbol) {
+      const futuresContract = `${symbol.symbol}${maturity}`;
+      loadOptions(futuresContract);
     }
   };
 
@@ -239,16 +244,15 @@ export default function Forex() {
       loadTVFutures();
     } else if (activeTab === "futures") {
       loadFutures();
-    } else if (selectedMaturity) {
-      loadOptions(selectedMaturity);
+    } else if (selectedMaturity && symbol) {
+      const futuresContract = `${symbol.symbol}${selectedMaturity}`;
+      loadOptions(futuresContract);
     }
   };
 
   const isLoading = dataSource === "tradingview" 
     ? isLoadingTVFutures 
     : (activeTab === "futures" ? isLoadingFutures : isLoadingOptions);
-  
-  const futures = futuresData?.data || [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -449,7 +453,7 @@ export default function Forex() {
                         </h2>
                         <p className="text-muted-foreground">
                           {symbol?.exchange} • Chaîne d'Options
-                          {options.maturity && ` • ${options.maturity}`}
+                          {options.futuresContract && ` • ${options.futuresContract}`}
                           {options.daysToExpiration > 0 && ` • ${options.daysToExpiration}j`}
                         </p>
                       </div>
