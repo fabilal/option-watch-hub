@@ -47,16 +47,16 @@ serve(async (req) => {
   }
 
   try {
-    const { exchange, symbol } = await req.json();
+    const { symbol } = await req.json();
 
-    if (!exchange || !symbol) {
+    if (!symbol) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Missing exchange or symbol' }),
+        JSON.stringify({ success: false, error: 'Missing symbol' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }
 
-    const cacheKey = `${exchange}-${symbol}`;
+    const cacheKey = `forex-${symbol}`;
     
     // Check cache first
     const cached = getFromCache(cacheKey);
@@ -89,7 +89,7 @@ serve(async (req) => {
 
     const promise = (async () => {
       try {
-        const url = `https://www.tradingview.com/symbols/${exchange}-${symbol}/futures/`;
+        const url = `https://www.barchart.com/futures/quotes/${symbol}*0/futures-prices`;
         console.log(`[scrape-forex-futures] Scraping: ${url}`);
 
         const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
@@ -153,11 +153,8 @@ function parseContractsFromMarkdown(markdown: string, baseSymbol: string): Futur
   const contracts: FuturesContract[] = [];
   const lines = markdown.split('\n');
   
-  // Clean up the base symbol (remove "1!" suffix)
-  const cleanBase = baseSymbol.replace(/\d+!$/, '');
-  
-  // Look for table rows with contract symbols
-  const contractRegex = new RegExp(`(${cleanBase}[A-Z]\\d{4})`, 'g');
+  // Look for table rows with contract symbols like E6H26, B6M26
+  const contractRegex = new RegExp(`\\b(${baseSymbol}[FGHJKMNQUVXZ]\\d{2})\\b`, 'g');
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -166,27 +163,40 @@ function parseContractsFromMarkdown(markdown: string, baseSymbol: string): Futur
     if (matches && matches.length > 0) {
       const contractSymbol = matches[0];
       
-      // Parse the line for data
-      const parts = line.split('|').map(p => p.trim()).filter(Boolean);
+      // Parse the line - look for pipe-separated or whitespace-separated values
+      const parts = line.split(/[|\t]/).map(p => p.trim()).filter(Boolean);
       
-      if (parts.length >= 3) {
-        contracts.push({
-          symbol: contractSymbol,
-          expiration: parts[1] || '',
-          daysLeft: parseInt(parts[2]) || 0,
-          last: parts[3] || '',
-          change: parts[4] || '',
-          changePercent: parts[5] || '',
-          open: parts[6] || '',
-          high: parts[7] || '',
-          low: parts[8] || '',
-          volume: parts[9] || '',
-          openInterest: parts[10] || '',
-        });
-      }
+      // Try to extract numeric values from the line
+      const numericPattern = /-?\d+\.?\d*/g;
+      const nums = line.match(numericPattern) || [];
+      
+      // Extract expiration date pattern like "Mar '26" or "Mar 2026"
+      const expirationMatch = line.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*'?\d{2,4}/i);
+      
+      contracts.push({
+        symbol: contractSymbol,
+        expiration: expirationMatch ? expirationMatch[0] : '',
+        daysLeft: 0,
+        last: nums[0] || '',
+        change: nums[1] || '',
+        changePercent: nums[2] ? `${nums[2]}%` : '',
+        open: nums[3] || '',
+        high: nums[4] || '',
+        low: nums[5] || '',
+        volume: nums[6] || '',
+        openInterest: nums[7] || '',
+      });
     }
   }
   
-  console.log(`[scrape-forex-futures] Parsed ${contracts.length} contracts`);
-  return contracts;
+  // Remove duplicates
+  const seen = new Set<string>();
+  const unique = contracts.filter(c => {
+    if (seen.has(c.symbol)) return false;
+    seen.add(c.symbol);
+    return true;
+  });
+  
+  console.log(`[scrape-forex-futures] Parsed ${unique.length} contracts`);
+  return unique;
 }
