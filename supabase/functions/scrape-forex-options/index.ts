@@ -156,9 +156,16 @@ serve(async (req) => {
             formats: ['extract'],
             extract: {
               schema: optionsSchema,
-              prompt: "Extract options chain data from the volatility-greeks table. For each row, extract the strike price and corresponding call/put data including last price, IV (implied volatility), delta, gamma, theta, vega, volume, and open interest. The table shows calls on the left and puts on the right with strike in the middle."
+              prompt: `IMPORTANT: Extract ALL option strikes from the volatility-greeks table - there can be 50-200+ rows. Do NOT skip any strikes. 
+The table structure is: Call data columns | Strike | Put data columns.
+For EVERY single row in the table, extract:
+- Strike price (center column)
+- Call side: Last, IV%, Delta, Gamma, Theta, Vega, Volume, Open Interest
+- Put side: Last, IV%, Delta, Gamma, Theta, Vega, Volume, Open Interest
+Extract the complete list from the first strike to the last strike. Include ALL rows even if some values are empty or zero.
+Also extract the underlying futures price shown at the top and days to expiration.`
             },
-            waitFor: 8000,
+            waitFor: 12000,
           }),
         });
 
