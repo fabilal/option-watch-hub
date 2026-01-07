@@ -1,5 +1,5 @@
 import { Card } from "@/components/ui/card";
-import { TrendingUp, TrendingDown, Activity, DollarSign } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, Calendar } from "lucide-react";
 import { type ForexOptionsChain } from "@/lib/forexApi";
 
 interface ForexOptionsStatsProps {
@@ -29,15 +29,15 @@ export function ForexOptionsStats({ options }: ForexOptionsStatsProps) {
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
       <Card className="p-4 bg-card border-border">
         <div className="flex items-center gap-2 text-muted-foreground mb-2">
-          <DollarSign className="w-4 h-4" />
-          <span className="text-xs font-medium">Prix Sous-jacent</span>
+          <Calendar className="w-4 h-4" />
+          <span className="text-xs font-medium">Expiration</span>
         </div>
         <p className="text-2xl font-bold text-foreground">
-          {options.underlyingPrice || '-'}
+          {options.daysToExpiration > 0 ? `${options.daysToExpiration}j` : '-'}
         </p>
-        {options.selectedMaturity && (
-          <p className="text-xs text-muted-foreground mt-1">{options.selectedMaturity}</p>
-        )}
+        <p className="text-xs text-muted-foreground mt-1">
+          {options.maturity || 'N/A'}
+        </p>
       </Card>
 
       <Card className="p-4 bg-card border-border">
@@ -71,7 +71,7 @@ export function ForexOptionsStats({ options }: ForexOptionsStatsProps) {
           {totalCalls > 0 ? (totalPuts / totalCalls).toFixed(2) : '-'}
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          {totalPuts + totalCalls} options au total
+          IV globale: {options.impliedVolatility > 0 ? `${options.impliedVolatility.toFixed(1)}%` : '-'}
         </p>
       </Card>
     </div>

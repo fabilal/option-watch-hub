@@ -49,16 +49,7 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
           {opt.strike.toFixed(4)}
         </TableCell>
         <TableCell className="text-right tabular-nums font-semibold">
-          {formatPrice(opt.last)}
-        </TableCell>
-        <TableCell className="text-right tabular-nums text-muted-foreground">
-          {formatPrice(opt.bid)}
-        </TableCell>
-        <TableCell className="text-right tabular-nums text-muted-foreground">
-          {formatPrice(opt.ask)}
-        </TableCell>
-        <TableCell className="text-right tabular-nums">
-          {opt.volume || '-'}
+          {formatPrice(opt.latest)}
         </TableCell>
         <TableCell className="text-right tabular-nums text-primary font-medium">
           {formatIV(opt.iv)}
@@ -74,6 +65,12 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
         </TableCell>
         <TableCell className="text-right tabular-nums text-muted-foreground">
           {formatGreek(opt.vega)}
+        </TableCell>
+        <TableCell className="text-right tabular-nums text-muted-foreground">
+          {opt.ivSkew ? `${opt.ivSkew > 0 ? '+' : ''}${opt.ivSkew.toFixed(1)}%` : '-'}
+        </TableCell>
+        <TableCell className="text-right tabular-nums text-muted-foreground text-xs">
+          {opt.lastTrade || '-'}
         </TableCell>
       </TableRow>
     ));
@@ -96,14 +93,13 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
                 <TableHead className="font-semibold">Type</TableHead>
                 <TableHead className="font-semibold">Strike</TableHead>
                 <TableHead className="font-semibold text-right">Prix</TableHead>
-                <TableHead className="font-semibold text-right">Bid</TableHead>
-                <TableHead className="font-semibold text-right">Ask</TableHead>
-                <TableHead className="font-semibold text-right">Vol</TableHead>
                 <TableHead className="font-semibold text-right">IV</TableHead>
                 <TableHead className="font-semibold text-right">Δ</TableHead>
                 <TableHead className="font-semibold text-right">Γ</TableHead>
                 <TableHead className="font-semibold text-right">Θ</TableHead>
                 <TableHead className="font-semibold text-right">V</TableHead>
+                <TableHead className="font-semibold text-right">IV Skew</TableHead>
+                <TableHead className="font-semibold text-right">Dernier Trade</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -111,7 +107,7 @@ export function ForexOptionsTable({ calls, puts }: ForexOptionsTableProps) {
               {renderOptions(displayPuts, 'Put')}
               {displayCalls.length === 0 && displayPuts.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={10} className="text-center py-8 text-muted-foreground">
                     Aucune donnée d'options disponible
                   </TableCell>
                 </TableRow>
