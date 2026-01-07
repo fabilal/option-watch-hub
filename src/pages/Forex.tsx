@@ -21,8 +21,10 @@ import {
 import {
   fetchTVForexSymbols,
   fetchTVForexFutures,
+  fetchTVForexOptions,
   type TVForexSymbol,
   type TVForexFutures,
+  type TVForexOptionsChain,
 } from "@/lib/tvForexApi";
 import { ForexCategorySelector } from "@/components/forex/ForexCategorySelector";
 import { ForexSymbolSelector } from "@/components/forex/ForexSymbolSelector";
@@ -32,6 +34,7 @@ import { ForexOptionsTable } from "@/components/forex/ForexOptionsTable";
 import { ForexOptionsStats } from "@/components/forex/ForexOptionsStats";
 import { TVForexSymbolSelector } from "@/components/forex/TVForexSymbolSelector";
 import { TVForexFuturesTable } from "@/components/forex/TVForexFuturesTable";
+import { TVForexOptionsTable } from "@/components/forex/TVForexOptionsTable";
 
 type DataSource = "barchart" | "tradingview";
 
@@ -62,8 +65,11 @@ export default function Forex() {
   const [tvSymbols, setTVSymbols] = useState<TVForexSymbol[]>([]);
   const [tvSymbol, setTVSymbol] = useState<TVForexSymbol | null>(null);
   const [tvFutures, setTVFutures] = useState<TVForexFutures[]>([]);
+  const [tvOptions, setTVOptions] = useState<TVForexOptionsChain | null>(null);
   const [isLoadingTVSymbols, setIsLoadingTVSymbols] = useState(false);
   const [isLoadingTVFutures, setIsLoadingTVFutures] = useState(false);
+  const [isLoadingTVOptions, setIsLoadingTVOptions] = useState(false);
+  const [tvActiveTab, setTVActiveTab] = useState<"futures" | "options">("futures");
   const [tvError, setTVError] = useState<string | null>(null);
 
   // Load Barchart symbols when category changes
@@ -144,11 +150,44 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
+  // Load TradingView options when symbol changes
+  const loadTVOptions = useCallback(async () => {
+    if (!tvSymbol) return;
+
+    setIsLoadingTVOptions(true);
+    setTVError(null);
+    try {
+      const data = await fetchTVForexOptions(tvSymbol);
+      setTVOptions(data);
+      
+      if (data && (data.calls.length > 0 || data.puts.length > 0)) {
+        toast({
+          title: "Options TradingView chargées",
+          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}`,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to load TV options:', err);
+      setTVError('Impossible de charger les options TradingView');
+      toast({
+        title: "Erreur",
+        description: "Impossible de charger les options TradingView",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingTVOptions(false);
+    }
+  }, [tvSymbol, toast]);
+
   useEffect(() => {
     if (dataSource === "tradingview" && tvSymbol) {
-      loadTVFutures();
+      if (tvActiveTab === "futures") {
+        loadTVFutures();
+      } else {
+        loadTVOptions();
+      }
     }
-  }, [dataSource, tvSymbol, loadTVFutures]);
+  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVOptions]);
 
   // Load Barchart futures data when symbol changes
   const loadFutures = useCallback(async () => {
@@ -241,7 +280,11 @@ export default function Forex() {
 
   const handleRefresh = () => {
     if (dataSource === "tradingview") {
-      loadTVFutures();
+      if (tvActiveTab === "futures") {
+        loadTVFutures();
+      } else {
+        loadTVOptions();
+      }
     } else if (activeTab === "futures") {
       loadFutures();
     } else if (selectedMaturity && symbol) {
@@ -251,7 +294,7 @@ export default function Forex() {
   };
 
   const isLoading = dataSource === "tradingview" 
-    ? isLoadingTVFutures 
+    ? (tvActiveTab === "futures" ? isLoadingTVFutures : isLoadingTVOptions)
     : (activeTab === "futures" ? isLoadingFutures : isLoadingOptions);
 
   return (
@@ -301,57 +344,99 @@ export default function Forex() {
                   variant="outline"
                   size="sm"
                   onClick={handleRefresh}
-                  disabled={isLoadingTVFutures || !tvSymbol}
+                  disabled={isLoading || !tvSymbol}
                   className="border-border hover:border-primary/50"
                 >
-                  <RefreshCw className={`w-4 h-4 mr-2 ${isLoadingTVFutures ? "animate-spin" : ""}`} />
+                  <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
                   Actualiser
                 </Button>
               </div>
             </div>
 
-            {/* TV Error State */}
-            {tvError && (
-              <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-destructive mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-sm text-foreground font-medium">Erreur de chargement</p>
-                  <p className="text-xs text-muted-foreground">{tvError}</p>
-                </div>
-              </div>
-            )}
+            {/* TV Tabs */}
+            <Tabs value={tvActiveTab} onValueChange={(v) => setTVActiveTab(v as "futures" | "options")}>
+              <TabsList className="mb-6">
+                <TabsTrigger value="futures" className="flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4" />
+                  Futures
+                </TabsTrigger>
+                <TabsTrigger value="options" className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4" />
+                  Options
+                </TabsTrigger>
+              </TabsList>
 
-            {/* TV Content */}
-            {isLoadingTVFutures ? (
-              <LoadingSkeleton />
-            ) : tvFutures.length > 0 ? (
-              <div className="space-y-6 animate-fade-in">
-                <div className="flex items-center justify-between">
+              {/* TV Error State */}
+              {tvError && (
+                <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-destructive mt-0.5 flex-shrink-0" />
                   <div>
-                    <h2 className="text-xl font-semibold text-foreground">
-                      {tvSymbol?.name}
-                      <span className="text-primary ml-2 font-mono text-lg">({tvSymbol?.symbol})</span>
-                    </h2>
-                    <p className="text-muted-foreground">{tvSymbol?.exchange} • Contrats Futures TradingView</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold tabular-nums">{tvSymbol?.price}</p>
-                    <p className={`text-sm ${
-                      parseFloat(tvSymbol?.changePercent?.replace(/[^-\d.]/g, '') || '0') > 0 
-                        ? 'text-success' 
-                        : parseFloat(tvSymbol?.changePercent?.replace(/[^-\d.]/g, '') || '0') < 0 
-                          ? 'text-destructive' 
-                          : 'text-muted-foreground'
-                    }`}>
-                      {tvSymbol?.change} ({tvSymbol?.changePercent})
-                    </p>
+                    <p className="text-sm text-foreground font-medium">Erreur de chargement</p>
+                    <p className="text-xs text-muted-foreground">{tvError}</p>
                   </div>
                 </div>
-                <TVForexFuturesTable contracts={tvFutures} />
-              </div>
-            ) : !isLoadingTVFutures && !tvError ? (
-              <EmptyState />
-            ) : null}
+              )}
+
+              <TabsContent value="futures">
+                {isLoadingTVFutures ? (
+                  <LoadingSkeleton />
+                ) : tvFutures.length > 0 ? (
+                  <div className="space-y-6 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-xl font-semibold text-foreground">
+                          {tvSymbol?.name}
+                          <span className="text-primary ml-2 font-mono text-lg">({tvSymbol?.symbol})</span>
+                        </h2>
+                        <p className="text-muted-foreground">{tvSymbol?.exchange} • Contrats Futures TradingView</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold tabular-nums">{tvSymbol?.price}</p>
+                        <p className={`text-sm ${
+                          parseFloat(tvSymbol?.changePercent?.replace(/[^-\d.]/g, '') || '0') > 0 
+                            ? 'text-success' 
+                            : parseFloat(tvSymbol?.changePercent?.replace(/[^-\d.]/g, '') || '0') < 0 
+                              ? 'text-destructive' 
+                              : 'text-muted-foreground'
+                        }`}>
+                          {tvSymbol?.change} ({tvSymbol?.changePercent})
+                        </p>
+                      </div>
+                    </div>
+                    <TVForexFuturesTable contracts={tvFutures} />
+                  </div>
+                ) : !isLoadingTVFutures && !tvError ? (
+                  <EmptyState />
+                ) : null}
+              </TabsContent>
+
+              <TabsContent value="options">
+                {isLoadingTVOptions ? (
+                  <LoadingSkeleton />
+                ) : tvOptions && (tvOptions.calls.length > 0 || tvOptions.puts.length > 0) ? (
+                  <div className="space-y-6 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-xl font-semibold text-foreground">
+                          {tvSymbol?.name}
+                          <span className="text-primary ml-2 font-mono text-lg">({tvSymbol?.symbol})</span>
+                        </h2>
+                        <p className="text-muted-foreground">
+                          {tvSymbol?.exchange} • Options Chain TradingView
+                          {tvOptions.expirationDate && ` • Exp: ${tvOptions.expirationDate}`}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold tabular-nums">{tvOptions.underlyingPrice || tvSymbol?.price}</p>
+                      </div>
+                    </div>
+                    <TVForexOptionsTable calls={tvOptions.calls} puts={tvOptions.puts} />
+                  </div>
+                ) : !isLoadingTVOptions && !tvError ? (
+                  <EmptyState />
+                ) : null}
+              </TabsContent>
+            </Tabs>
           </div>
         )}
 
