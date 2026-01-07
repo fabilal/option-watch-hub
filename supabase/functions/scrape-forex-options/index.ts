@@ -11,21 +11,20 @@ interface OptionContract {
   type: 'Call' | 'Put';
   symbol: string;
   last: string;
-  bid: string;
-  ask: string;
-  volume: string;
   iv: number;
   delta: number;
   gamma: number;
   theta: number;
   vega: number;
+  volume: string;
+  openInterest: string;
 }
 
 interface OptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
-  maturities: string[];
-  selectedMaturity: string;
+  futuresContract: string;
+  daysToExpiration: number;
   calls: OptionContract[];
   puts: OptionContract[];
 }
@@ -51,22 +50,67 @@ function getFromCache(key: string): OptionsChain | null | undefined {
   return entry.data;
 }
 
+// Schema for Firecrawl extract
+const optionsSchema = {
+  type: "object",
+  properties: {
+    underlyingPrice: {
+      type: "string",
+      description: "Current price of the underlying futures contract"
+    },
+    daysToExpiration: {
+      type: "number",
+      description: "Days until options expiration"
+    },
+    options: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          strike: { type: "number", description: "Strike price" },
+          callLast: { type: "string", description: "Call option last price" },
+          callIV: { type: "number", description: "Call implied volatility as percentage" },
+          callDelta: { type: "number", description: "Call delta" },
+          callGamma: { type: "number", description: "Call gamma" },
+          callTheta: { type: "number", description: "Call theta" },
+          callVega: { type: "number", description: "Call vega" },
+          callVolume: { type: "string", description: "Call volume" },
+          callOI: { type: "string", description: "Call open interest" },
+          putLast: { type: "string", description: "Put option last price" },
+          putIV: { type: "number", description: "Put implied volatility as percentage" },
+          putDelta: { type: "number", description: "Put delta" },
+          putGamma: { type: "number", description: "Put gamma" },
+          putTheta: { type: "number", description: "Put theta" },
+          putVega: { type: "number", description: "Put vega" },
+          putVolume: { type: "string", description: "Put volume" },
+          putOI: { type: "string", description: "Put open interest" },
+        },
+        required: ["strike"]
+      }
+    }
+  },
+  required: ["options"]
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { exchange, symbol, maturity } = await req.json();
+    const { futuresContract, symbol } = await req.json();
 
-    if (!exchange || !symbol) {
+    // Accept either futuresContract (like "E6H26") or symbol
+    const contractSymbol = futuresContract || symbol;
+
+    if (!contractSymbol) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Missing exchange or symbol' }),
+        JSON.stringify({ success: false, error: 'Missing futuresContract or symbol' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }
 
-    const cacheKey = `${exchange}-${symbol}-${maturity || 'default'}`;
+    const cacheKey = `barchart-options-${contractSymbol}`;
     
     const cached = getFromCache(cacheKey);
     if (cached !== undefined) {
@@ -97,7 +141,8 @@ serve(async (req) => {
 
     const promise = (async (): Promise<OptionsChain | null> => {
       try {
-        const url = `https://www.tradingview.com/symbols/${exchange}-${symbol}/options/chain/`;
+        // Barchart options URL with volatility-greeks view
+        const url = `https://www.barchart.com/futures/quotes/${contractSymbol}/volatility-greeks?futuresOptionsView=merged&moneyness=allRows`;
         console.log(`[scrape-forex-options] Scraping: ${url}`);
 
         const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
@@ -108,20 +153,82 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: ['markdown'],
-            waitFor: 12000,
+            formats: ['extract'],
+            extract: {
+              schema: optionsSchema,
+              prompt: "Extract options chain data from the volatility-greeks table. For each row, extract the strike price and corresponding call/put data including last price, IV (implied volatility), delta, gamma, theta, vega, volume, and open interest. The table shows calls on the left and puts on the right with strike in the middle."
+            },
+            waitFor: 8000,
           }),
         });
 
         if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[scrape-forex-options] Firecrawl error: ${response.status}`, errorText);
           throw new Error(`Firecrawl error: ${response.status}`);
         }
 
         const result = await response.json();
-        const markdown = result.data?.markdown || '';
+        console.log(`[scrape-forex-options] Extract result keys:`, Object.keys(result));
         
-        const chain = parseOptionsChain(markdown, symbol, maturity);
+        const extractData = result.data?.extract || result.extract || {};
+        const optionsData = extractData.options || [];
         
+        console.log(`[scrape-forex-options] Extracted ${optionsData.length} option rows`);
+
+        const chain: OptionsChain = {
+          underlyingSymbol: contractSymbol.substring(0, 2), // E6, B6, etc.
+          underlyingPrice: extractData.underlyingPrice || '0',
+          futuresContract: contractSymbol,
+          daysToExpiration: extractData.daysToExpiration || 0,
+          calls: [],
+          puts: [],
+        };
+
+        for (const opt of optionsData) {
+          if (!opt.strike || opt.strike <= 0) continue;
+
+          // Add call option
+          chain.calls.push({
+            strike: opt.strike,
+            type: 'Call',
+            symbol: `${contractSymbol}C${opt.strike}`,
+            last: opt.callLast || '0',
+            iv: opt.callIV || 0,
+            delta: opt.callDelta || 0,
+            gamma: opt.callGamma || 0,
+            theta: opt.callTheta || 0,
+            vega: opt.callVega || 0,
+            volume: opt.callVolume || '0',
+            openInterest: opt.callOI || '0',
+          });
+
+          // Add put option
+          chain.puts.push({
+            strike: opt.strike,
+            type: 'Put',
+            symbol: `${contractSymbol}P${opt.strike}`,
+            last: opt.putLast || '0',
+            iv: opt.putIV || 0,
+            delta: opt.putDelta || 0,
+            gamma: opt.putGamma || 0,
+            theta: opt.putTheta || 0,
+            vega: opt.putVega || 0,
+            volume: opt.putVolume || '0',
+            openInterest: opt.putOI || '0',
+          });
+        }
+
+        // Sort by strike
+        chain.calls.sort((a, b) => a.strike - b.strike);
+        chain.puts.sort((a, b) => a.strike - b.strike);
+
+        console.log(`[scrape-forex-options] Final: ${chain.calls.length} calls, ${chain.puts.length} puts`);
+
+        if (optionsData.length > 0) {
+          console.log(`[scrape-forex-options] Sample:`, JSON.stringify(optionsData[0]));
+        }
+
         cache.set(cacheKey, { 
           expiresAt: Date.now() + CACHE_TTL_MS, 
           data: chain 
@@ -156,93 +263,3 @@ serve(async (req) => {
     );
   }
 });
-
-function parseOptionsChain(markdown: string, symbol: string, requestedMaturity?: string): OptionsChain {
-  const chain: OptionsChain = {
-    underlyingSymbol: symbol,
-    underlyingPrice: '0',
-    maturities: [],
-    selectedMaturity: requestedMaturity || '',
-    calls: [],
-    puts: [],
-  };
-
-  const lines = markdown.split('\n');
-  
-  // Try to find maturities
-  for (const line of lines) {
-    // Look for date patterns like "Jan 2025", "Feb 2025", etc.
-    const maturityMatches = line.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\b/gi);
-    if (maturityMatches) {
-      for (const mat of maturityMatches) {
-        if (!chain.maturities.includes(mat)) {
-          chain.maturities.push(mat);
-        }
-      }
-    }
-  }
-
-  // If no maturities found, add a default
-  if (chain.maturities.length === 0) {
-    const now = new Date();
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    chain.maturities.push(`${months[now.getMonth()]} ${now.getFullYear()}`);
-  }
-
-  chain.selectedMaturity = requestedMaturity || chain.maturities[0] || '';
-
-  // Parse options from table structure
-  let inOptionsTable = false;
-  let headerParts: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    // Detect header row
-    if (line.includes('Strike') || line.includes('IV') || line.includes('Delta')) {
-      inOptionsTable = true;
-      headerParts = line.split('|').map(p => p.trim().toLowerCase());
-      continue;
-    }
-
-    if (!inOptionsTable) continue;
-
-    // Parse data rows
-    const parts = line.split('|').map(p => p.trim());
-    if (parts.length < 5) continue;
-
-    // Try to find strike price
-    let strike = 0;
-    for (const part of parts) {
-      const num = parseFloat(part.replace(/[^\d.]/g, ''));
-      if (!isNaN(num) && num > 0 && num < 100) { // Forex strikes are typically < 100
-        strike = num;
-        break;
-      }
-    }
-
-    if (strike > 0) {
-      const optionBase = {
-        strike,
-        symbol: `${symbol}_${strike}`,
-        last: parts[1] || '0',
-        bid: parts[2] || '0',
-        ask: parts[3] || '0',
-        volume: parts[4] || '0',
-        iv: parseFloat(parts[5]?.replace(/[^\d.]/g, '') || '0'),
-        delta: parseFloat(parts[6]?.replace(/[^\d.-]/g, '') || '0'),
-        gamma: parseFloat(parts[7]?.replace(/[^\d.]/g, '') || '0'),
-        theta: parseFloat(parts[8]?.replace(/[^\d.-]/g, '') || '0'),
-        vega: parseFloat(parts[9]?.replace(/[^\d.]/g, '') || '0'),
-      };
-
-      // Add as both call and put for now (real parsing would differentiate)
-      chain.calls.push({ ...optionBase, type: 'Call' });
-      chain.puts.push({ ...optionBase, type: 'Put' });
-    }
-  }
-
-  console.log(`[scrape-forex-options] Parsed ${chain.calls.length} calls, ${chain.puts.length} puts, ${chain.maturities.length} maturities`);
-  
-  return chain;
-}
