@@ -49,7 +49,7 @@ export function ForexFuturesTable({ contracts }: ForexFuturesTableProps) {
         <TableHeader>
           <TableRow className="bg-muted/50">
             <TableHead className="font-semibold">Contrat</TableHead>
-            <TableHead className="font-semibold">Mois</TableHead>
+            <TableHead className="font-semibold">Expiration</TableHead>
             <TableHead className="font-semibold text-right">Dernier</TableHead>
             <TableHead className="font-semibold text-right">Variation</TableHead>
             <TableHead className="font-semibold text-right">Ouv.</TableHead>
@@ -57,26 +57,25 @@ export function ForexFuturesTable({ contracts }: ForexFuturesTableProps) {
             <TableHead className="font-semibold text-right">Bas</TableHead>
             <TableHead className="font-semibold text-right">Volume</TableHead>
             <TableHead className="font-semibold text-right">OI</TableHead>
-            <TableHead className="font-semibold text-right">Heure</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {contracts.map((contract, idx) => (
             <TableRow 
-              key={contract.contract || idx}
+              key={contract.symbol || idx}
               className="hover:bg-muted/30 transition-colors"
             >
               <TableCell className="font-mono text-primary font-medium">
-                {contract.contract}
+                {contract.symbol}
               </TableCell>
               <TableCell className="text-muted-foreground">
-                {contract.month || '-'}
+                {contract.expiration || '-'}
               </TableCell>
               <TableCell className="text-right font-semibold tabular-nums">
                 {contract.last}
               </TableCell>
               <TableCell className="text-right">
-                {formatChange(contract.change, contract.percentChange)}
+                {formatChange(contract.change, contract.changePercent)}
               </TableCell>
               <TableCell className="text-right tabular-nums text-muted-foreground">
                 {contract.open || '-'}
@@ -92,9 +91,6 @@ export function ForexFuturesTable({ contracts }: ForexFuturesTableProps) {
               </TableCell>
               <TableCell className="text-right tabular-nums text-muted-foreground">
                 {contract.openInterest || '-'}
-              </TableCell>
-              <TableCell className="text-right tabular-nums text-muted-foreground text-xs">
-                {contract.time || '-'}
               </TableCell>
             </TableRow>
           ))}

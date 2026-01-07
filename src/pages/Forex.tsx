@@ -14,8 +14,7 @@ import {
   extractMaturitiesFromFutures,
   type ForexCategory,
   type ForexSymbol,
-  type ForexFuturesContract,
-  type ForexFuturesData,
+  type ForexFuturesResponse,
   type ForexOptionsChain,
   FOREX_CATEGORIES,
 } from "@/lib/forexApi";
@@ -34,7 +33,7 @@ export default function Forex() {
   const [symbol, setSymbol] = useState<ForexSymbol | null>(null);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
 
-  const [futuresData, setFuturesData] = useState<ForexFuturesData | null>(null);
+  const [futuresData, setFuturesData] = useState<ForexFuturesResponse | null>(null);
   const [isLoadingFutures, setIsLoadingFutures] = useState(false);
 
   const [options, setOptions] = useState<ForexOptionsChain | null>(null);
@@ -77,18 +76,18 @@ export default function Forex() {
       const data = await fetchForexFutures(symbol);
       setFuturesData(data);
       
-      if (data && data.futures.length > 0) {
+      if (data && data.data.length > 0) {
         // Extract maturities from futures for options selector
-        const extractedMaturities = extractMaturitiesFromFutures(data.futures);
+        const extractedMaturities = extractMaturitiesFromFutures(data.data);
         setMaturities(extractedMaturities);
-        
+
         if (extractedMaturities.length > 0 && !selectedMaturity) {
           setSelectedMaturity(extractedMaturities[0]);
         }
-        
+
         toast({
           title: "Données chargées",
-          description: `${data.futures.length} contrats futures pour ${symbol.name}`,
+          description: `${data.data.length} contrats futures pour ${symbol.name}`,
         });
       }
     } catch (err) {
@@ -161,7 +160,7 @@ export default function Forex() {
   };
 
   const isLoading = activeTab === "futures" ? isLoadingFutures : isLoadingOptions;
-  const futures = futuresData?.futures || [];
+  const futures = futuresData?.data || [];
 
   return (
     <div className="min-h-screen bg-background">

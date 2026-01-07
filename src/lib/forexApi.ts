@@ -17,17 +17,17 @@ export interface ForexSymbol {
 }
 
 export interface ForexFuturesContract {
-  contract: string;
-  month: string;
+  symbol: string;
+  expiration: string;
+  daysLeft: number;
   last: string;
   change: string;
-  percentChange: string;
+  changePercent: string;
   open: string;
   high: string;
   low: string;
   volume: string;
   openInterest: string;
-  time: string;
 }
 
 export interface ForexOptionContract {
@@ -54,17 +54,16 @@ export interface ForexOptionsChain {
   puts: ForexOptionContract[];
 }
 
-export interface ForexFuturesData {
+export interface ForexFuturesResponse {
   success: boolean;
-  symbol: string;
-  name: string;
-  futures: ForexFuturesContract[];
+  data: ForexFuturesContract[];
+  cached?: boolean;
   error?: string;
 }
 
 // In-flight request deduplication
 const symbolsInflight = new Map<string, Promise<ForexSymbol[]>>();
-const futuresInflight = new Map<string, Promise<ForexFuturesData | null>>();
+const futuresInflight = new Map<string, Promise<ForexFuturesResponse | null>>();
 const optionsInflight = new Map<string, Promise<ForexOptionsChain | null>>();
 
 /**
@@ -108,9 +107,9 @@ export async function fetchForexSymbols(category: ForexCategory): Promise<ForexS
 /**
  * Fetch Forex futures contracts for a symbol
  */
-export async function fetchForexFutures(symbol: ForexSymbol): Promise<ForexFuturesData | null> {
+export async function fetchForexFutures(symbol: ForexSymbol): Promise<ForexFuturesResponse | null> {
   const cacheKey = `${symbol.symbol}`;
-  
+
   if (futuresInflight.has(cacheKey)) {
     return futuresInflight.get(cacheKey)!;
   }
@@ -118,7 +117,7 @@ export async function fetchForexFutures(symbol: ForexSymbol): Promise<ForexFutur
   const promise = (async () => {
     try {
       const { data, error } = await supabase.functions.invoke('scrape-forex-futures', {
-        body: { 
+        body: {
           symbol: symbol.symbol,
           name: symbol.name,
         },
@@ -129,8 +128,8 @@ export async function fetchForexFutures(symbol: ForexSymbol): Promise<ForexFutur
         return null;
       }
 
-      if (data?.success) {
-        return data as ForexFuturesData;
+      if (data?.success && Array.isArray(data?.data)) {
+        return data as ForexFuturesResponse;
       }
 
       return null;
@@ -205,10 +204,10 @@ export async function fetchForexOptions(
  */
 export function extractMaturitiesFromFutures(futures: ForexFuturesContract[]): string[] {
   return futures
-    .map(f => {
+    .map((f) => {
       // Extract maturity code from contract (e.g., "E6H26" -> "H26")
-      const match = f.contract.match(/[A-Z]{2,3}([FGHJKMNQUVXZ]\d{2})$/);
-      return match ? match[1] : null;
+      const match = f.symbol.match(/[FGHJKMNQUVXZ]\d{2}$/);
+      return match ? match[0] : null;
     })
     .filter((m): m is string => m !== null);
 }
