@@ -162,9 +162,9 @@ export async function fetchForexOptions(
     try {
       const { data, error } = await supabase.functions.invoke('scrape-forex-options', {
         body: { 
+          exchange: symbol.exchange || 'CME',
           symbol: symbol.symbol,
-          maturityCode,
-          name: symbol.name,
+          maturity: maturityCode,
         },
       });
 
