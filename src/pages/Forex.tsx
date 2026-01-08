@@ -22,6 +22,7 @@ import {
   fetchTVForexSymbols,
   fetchTVForexFutures,
   fetchTVForexOptions,
+  fetchTVForexOptionsMaturities,
   type TVForexSymbol,
   type TVForexFutures,
   type TVForexOptionsChain,
@@ -35,6 +36,7 @@ import { ForexOptionsStats } from "@/components/forex/ForexOptionsStats";
 import { TVForexSymbolSelector } from "@/components/forex/TVForexSymbolSelector";
 import { TVForexFuturesTable } from "@/components/forex/TVForexFuturesTable";
 import { TVForexOptionsTable } from "@/components/forex/TVForexOptionsTable";
+import { TVForexMaturitySelector } from "@/components/forex/TVForexMaturitySelector";
 
 type DataSource = "barchart" | "tradingview";
 
@@ -66,9 +68,12 @@ export default function Forex() {
   const [tvSymbol, setTVSymbol] = useState<TVForexSymbol | null>(null);
   const [tvFutures, setTVFutures] = useState<TVForexFutures[]>([]);
   const [tvOptions, setTVOptions] = useState<TVForexOptionsChain | null>(null);
+  const [tvMaturities, setTVMaturities] = useState<string[]>([]);
+  const [tvSelectedMaturity, setTVSelectedMaturity] = useState<string | null>(null);
   const [isLoadingTVSymbols, setIsLoadingTVSymbols] = useState(false);
   const [isLoadingTVFutures, setIsLoadingTVFutures] = useState(false);
   const [isLoadingTVOptions, setIsLoadingTVOptions] = useState(false);
+  const [isLoadingTVMaturities, setIsLoadingTVMaturities] = useState(false);
   const [tvActiveTab, setTVActiveTab] = useState<"futures" | "options">("futures");
   const [tvError, setTVError] = useState<string | null>(null);
 
@@ -150,20 +155,42 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
-  // Load TradingView options when symbol changes
-  const loadTVOptions = useCallback(async () => {
+  // Load TradingView options maturities
+  const loadTVMaturities = useCallback(async () => {
+    if (!tvSymbol) return;
+
+    setIsLoadingTVMaturities(true);
+    try {
+      const mats = await fetchTVForexOptionsMaturities(tvSymbol);
+      setTVMaturities(mats);
+      
+      // Auto-select first maturity if available
+      if (mats.length > 0 && !tvSelectedMaturity) {
+        setTVSelectedMaturity(mats[0]);
+      }
+      
+      console.log(`Loaded ${mats.length} TV maturities`);
+    } catch (err) {
+      console.error('Failed to load TV maturities:', err);
+    } finally {
+      setIsLoadingTVMaturities(false);
+    }
+  }, [tvSymbol, tvSelectedMaturity]);
+
+  // Load TradingView options when symbol or maturity changes
+  const loadTVOptions = useCallback(async (maturity?: string) => {
     if (!tvSymbol) return;
 
     setIsLoadingTVOptions(true);
     setTVError(null);
     try {
-      const data = await fetchTVForexOptions(tvSymbol);
+      const data = await fetchTVForexOptions(tvSymbol, maturity);
       setTVOptions(data);
       
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options TradingView chargées",
-          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}`,
+          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}${maturity ? ` (${maturity})` : ''}`,
         });
       }
     } catch (err) {
@@ -179,15 +206,24 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
+  // Load data when TV symbol or tab changes
   useEffect(() => {
     if (dataSource === "tradingview" && tvSymbol) {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        loadTVOptions();
+        // Load maturities first, then options
+        loadTVMaturities();
+        loadTVOptions(tvSelectedMaturity || undefined);
       }
     }
-  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVOptions]);
+  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVMaturities, loadTVOptions, tvSelectedMaturity]);
+
+  // Handle TV maturity change
+  const handleTVMaturityChange = (maturity: string) => {
+    setTVSelectedMaturity(maturity);
+    loadTVOptions(maturity);
+  };
 
   // Load Barchart futures data when symbol changes
   const loadFutures = useCallback(async () => {
@@ -283,7 +319,8 @@ export default function Forex() {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        loadTVOptions();
+        loadTVMaturities();
+        loadTVOptions(tvSelectedMaturity || undefined);
       }
     } else if (activeTab === "futures") {
       loadFutures();
@@ -335,9 +372,24 @@ export default function Forex() {
               <TVForexSymbolSelector 
                 symbols={tvSymbols} 
                 selected={tvSymbol} 
-                onSelect={setTVSymbol}
+                onSelect={(s) => {
+                  setTVSymbol(s);
+                  setTVSelectedMaturity(null);
+                  setTVMaturities([]);
+                }}
                 disabled={isLoadingTVSymbols}
               />
+              
+              {/* Show maturity selector for options tab */}
+              {tvActiveTab === "options" && (
+                <TVForexMaturitySelector
+                  maturities={tvMaturities}
+                  selected={tvSelectedMaturity}
+                  onSelect={handleTVMaturityChange}
+                  disabled={isLoadingTVOptions}
+                  isLoading={isLoadingTVMaturities}
+                />
+              )}
               
               <div className="flex items-center gap-2 ml-auto">
                 <Button
@@ -423,11 +475,14 @@ export default function Forex() {
                         </h2>
                         <p className="text-muted-foreground">
                           {tvSymbol?.exchange} • Options Chain TradingView
-                          {tvOptions.expirationDate && ` • Exp: ${tvOptions.expirationDate}`}
+                          {tvSelectedMaturity && ` • Exp: ${tvSelectedMaturity}`}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="text-2xl font-bold tabular-nums">{tvOptions.underlyingPrice || tvSymbol?.price}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {tvOptions.calls.length} calls • {tvOptions.puts.length} puts
+                        </p>
                       </div>
                     </div>
                     <TVForexOptionsTable calls={tvOptions.calls} puts={tvOptions.puts} />

@@ -17,12 +17,16 @@ interface TVOptionContract {
   volume: string;
   openInterest: string;
   iv: number;
+  delta: string;
+  gamma: string;
+  theta: string;
 }
 
 interface TVOptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
   expirationDate: string;
+  maturities: string[]; // Available expiration dates
   calls: TVOptionContract[];
   puts: TVOptionContract[];
 }
@@ -48,54 +52,69 @@ function getFromCache(key: string): TVOptionsChain | null | undefined {
   return entry.data;
 }
 
-// Schema for extracting options data
+// Schema for extracting maturities only (fast call)
+const maturitiesSchema = {
+  type: "object",
+  properties: {
+    maturities: {
+      type: "array",
+      description: "ALL available expiration dates shown in the date selector at the top of the options chain. Extract ALL dates shown (can be 20-50+ dates). Format: 'DD MMM YYYY' or similar",
+      items: { type: "string" }
+    },
+    currentExpiration: {
+      type: "string",
+      description: "The currently selected/highlighted expiration date"
+    }
+  },
+  required: ["maturities"]
+};
+
+// Schema for extracting full options data
 const optionsSchema = {
   type: "object",
   properties: {
     underlyingPrice: {
       type: "string",
-      description: "Current price of the underlying futures contract shown at the top"
+      description: "Current price of the underlying futures contract"
     },
     expirationDate: {
       type: "string",
-      description: "Expiration date of the options"
+      description: "Selected expiration date of the options"
     },
     calls: {
       type: "array",
-      description: "ALL call options from the options chain table",
+      description: "ALL call options from the left side of the options chain. Extract EVERY SINGLE ROW - there can be 50-200+ strikes. Do NOT skip any.",
       items: {
         type: "object",
         properties: {
-          strike: { type: "number", description: "Strike price" },
-          symbol: { type: "string", description: "Option symbol/name" },
-          last: { type: "string", description: "Last traded price" },
-          change: { type: "string", description: "Price change" },
-          changePercent: { type: "string", description: "Percentage change" },
-          bid: { type: "string", description: "Bid price" },
-          ask: { type: "string", description: "Ask price" },
-          volume: { type: "string", description: "Trading volume" },
-          openInterest: { type: "string", description: "Open interest" },
-          iv: { type: "number", description: "Implied volatility as percentage" }
+          strike: { type: "number", description: "Strike price (middle column)" },
+          theta: { type: "string", description: "Theta value" },
+          gamma: { type: "string", description: "Gamma value" },
+          delta: { type: "string", description: "Delta value" },
+          last: { type: "string", description: "Prix/Last price" },
+          bid: { type: "string", description: "Demande/Bid price" },
+          ask: { type: "string", description: "Offre/Ask price" },
+          volume: { type: "string", description: "Volume" },
+          iv: { type: "number", description: "IV % - Implied volatility percentage" }
         },
         required: ["strike"]
       }
     },
     puts: {
       type: "array",
-      description: "ALL put options from the options chain table",
+      description: "ALL put options from the right side of the options chain. Extract EVERY SINGLE ROW - there can be 50-200+ strikes. Do NOT skip any.",
       items: {
         type: "object",
         properties: {
-          strike: { type: "number", description: "Strike price" },
-          symbol: { type: "string", description: "Option symbol/name" },
-          last: { type: "string", description: "Last traded price" },
-          change: { type: "string", description: "Price change" },
-          changePercent: { type: "string", description: "Percentage change" },
-          bid: { type: "string", description: "Bid price" },
-          ask: { type: "string", description: "Ask price" },
-          volume: { type: "string", description: "Trading volume" },
-          openInterest: { type: "string", description: "Open interest" },
-          iv: { type: "number", description: "Implied volatility as percentage" }
+          strike: { type: "number", description: "Strike price (middle column)" },
+          theta: { type: "string", description: "Theta value" },
+          gamma: { type: "string", description: "Gamma value" },
+          delta: { type: "string", description: "Delta value" },
+          last: { type: "string", description: "Prix/Last price" },
+          bid: { type: "string", description: "Demande/Bid price" },
+          ask: { type: "string", description: "Offre/Ask price" },
+          volume: { type: "string", description: "Volume" },
+          iv: { type: "number", description: "IV % - Implied volatility percentage" }
         },
         required: ["strike"]
       }
@@ -110,7 +129,7 @@ serve(async (req) => {
   }
 
   try {
-    const { symbol, exchange } = await req.json();
+    const { symbol, exchange, maturity, fetchMaturitiesOnly } = await req.json();
 
     if (!symbol) {
       return new Response(
@@ -120,7 +139,10 @@ serve(async (req) => {
     }
 
     const exchangeCode = exchange || 'CME';
-    const cacheKey = `tv-forex-options-${exchangeCode}-${symbol}`;
+    const maturitySuffix = maturity ? `-${maturity.replace(/\s+/g, '_')}` : '';
+    const cacheKey = fetchMaturitiesOnly 
+      ? `tv-forex-options-maturities-${exchangeCode}-${symbol}`
+      : `tv-forex-options-${exchangeCode}-${symbol}${maturitySuffix}`;
     
     const cached = getFromCache(cacheKey);
     if (cached !== undefined) {
@@ -153,8 +175,59 @@ serve(async (req) => {
       try {
         // TradingView options chain URL
         const url = `https://fr.tradingview.com/symbols/${exchangeCode}-${symbol}/options-chain/`;
-        console.log(`[scrape-tv-forex-options] Scraping: ${url}`);
+        console.log(`[scrape-tv-forex-options] Scraping: ${url}, maturity: ${maturity || 'default'}, maturitiesOnly: ${fetchMaturitiesOnly}`);
 
+        // If only fetching maturities, use a simpler/faster extraction
+        if (fetchMaturitiesOnly) {
+          const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
+            },
+            body: JSON.stringify({
+              url,
+              formats: ['extract'],
+              extract: {
+                schema: maturitiesSchema,
+                prompt: `Extract ALL available expiration dates from the options chain page.
+Look at the date selector/calendar at the top of the page.
+These dates are shown as clickable items (like "14", "15", "16" for days, organized by months).
+Convert them to a readable format with full date: "14 Jan 2025", "15 Jan 2025", etc.
+Include ALL available dates - there can be 30-50+ dates across multiple months.
+Also identify which date is currently selected/highlighted.`
+              },
+              waitFor: 8000,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Firecrawl error: ${response.status}`);
+          }
+
+          const result = await response.json();
+          const extractData = result.data?.extract || result.extract || {};
+          
+          const chain: TVOptionsChain = {
+            underlyingSymbol: symbol,
+            underlyingPrice: '0',
+            expirationDate: extractData.currentExpiration || '',
+            maturities: extractData.maturities || [],
+            calls: [],
+            puts: [],
+          };
+
+          console.log(`[scrape-tv-forex-options] Found ${chain.maturities.length} maturities`);
+          
+          cache.set(cacheKey, { 
+            expiresAt: Date.now() + CACHE_TTL_MS, 
+            data: chain 
+          });
+          
+          return chain;
+        }
+
+        // Full options chain extraction
         const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
           method: 'POST',
           headers: {
@@ -166,15 +239,22 @@ serve(async (req) => {
             formats: ['extract'],
             extract: {
               schema: optionsSchema,
-              prompt: `IMPORTANT: Extract ALL options from the options chain table. 
-Do NOT skip any strikes - include every single row.
-The page shows calls and puts for different strikes.
-For each option extract: strike, symbol, last price, change, change%, bid, ask, volume, open interest, and implied volatility (IV).
-Make sure to capture ALL strikes from the lowest to the highest available.
-Extract the underlying price from the top of the page.
-The options may be shown in a table format with calls on one side and puts on the other.`
+              prompt: `CRITICAL: Extract EVERY SINGLE OPTION from the options chain table. Do NOT skip ANY strikes.
+
+The page shows an options chain with:
+- CALLS on the LEFT side (columns: Theta, Gamma, Delta, Prix, Demande, Offre, Volume)
+- STRIKES in the MIDDLE column
+- IV % next to strikes
+- PUTS on the RIGHT side (columns: Volume, Offre, Demande, Prix, Delta, Gamma, Theta)
+
+There can be 50-200+ different strike prices. You MUST extract ALL of them.
+For each row, extract all available data: strike, theta, gamma, delta, last price (Prix), bid (Demande), ask (Offre), volume, and IV%.
+
+The currently selected maturity is: ${maturity || 'the default/first one shown'}
+
+IMPORTANT: Scroll through the ENTIRE table if needed. Do not stop at the first few rows.`
             },
-            waitFor: 12000,
+            waitFor: 15000,
           }),
         });
 
@@ -196,32 +276,39 @@ The options may be shown in a table format with calls on one side and puts on th
         const chain: TVOptionsChain = {
           underlyingSymbol: symbol,
           underlyingPrice: extractData.underlyingPrice || '0',
-          expirationDate: extractData.expirationDate || '',
+          expirationDate: extractData.expirationDate || maturity || '',
+          maturities: [], // Will be fetched separately
           calls: callsData.map((opt: any) => ({
             strike: opt.strike || 0,
             type: 'Call' as const,
             symbol: opt.symbol || `${symbol}C${opt.strike}`,
-            last: opt.last || '0',
+            last: opt.last || opt.prix || '0',
             change: opt.change || '0',
             changePercent: opt.changePercent || '0%',
-            bid: opt.bid || '0',
-            ask: opt.ask || '0',
+            bid: opt.bid || opt.demande || '0',
+            ask: opt.ask || opt.offre || '0',
             volume: opt.volume || '0',
             openInterest: opt.openInterest || '0',
             iv: opt.iv || 0,
+            delta: opt.delta || '0',
+            gamma: opt.gamma || '0',
+            theta: opt.theta || '0',
           })).filter((o: TVOptionContract) => o.strike > 0),
           puts: putsData.map((opt: any) => ({
             strike: opt.strike || 0,
             type: 'Put' as const,
             symbol: opt.symbol || `${symbol}P${opt.strike}`,
-            last: opt.last || '0',
+            last: opt.last || opt.prix || '0',
             change: opt.change || '0',
             changePercent: opt.changePercent || '0%',
-            bid: opt.bid || '0',
-            ask: opt.ask || '0',
+            bid: opt.bid || opt.demande || '0',
+            ask: opt.ask || opt.offre || '0',
             volume: opt.volume || '0',
             openInterest: opt.openInterest || '0',
             iv: opt.iv || 0,
+            delta: opt.delta || '0',
+            gamma: opt.gamma || '0',
+            theta: opt.theta || '0',
           })).filter((o: TVOptionContract) => o.strike > 0),
         };
 

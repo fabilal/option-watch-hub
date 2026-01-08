@@ -31,6 +31,11 @@ export function TVForexOptionsTable({ calls, puts }: TVForexOptionsTableProps) {
     return `${iv.toFixed(1)}%`;
   };
 
+  const formatGreek = (value: string | undefined) => {
+    if (!value || value === '0') return '-';
+    return value;
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -47,50 +52,63 @@ export function TVForexOptionsTable({ calls, puts }: TVForexOptionsTableProps) {
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50">
-                <TableHead colSpan={6} className="text-center border-r border-border bg-success/10 text-success">
+                <TableHead colSpan={8} className="text-center border-r border-border bg-success/10 text-success">
                   CALLS
                 </TableHead>
                 <TableHead className="text-center font-bold bg-muted">
                   Strike
                 </TableHead>
-                <TableHead colSpan={6} className="text-center bg-destructive/10 text-destructive">
+                <TableHead className="text-center font-bold bg-muted border-r border-border">
+                  IV
+                </TableHead>
+                <TableHead colSpan={8} className="text-center bg-destructive/10 text-destructive">
                   PUTS
                 </TableHead>
               </TableRow>
               <TableRow className="bg-muted/30">
                 {/* Call headers */}
-                <TableHead className="text-right text-xs">Last</TableHead>
-                <TableHead className="text-right text-xs">Chg%</TableHead>
+                <TableHead className="text-right text-xs">Theta</TableHead>
+                <TableHead className="text-right text-xs">Gamma</TableHead>
+                <TableHead className="text-right text-xs">Delta</TableHead>
+                <TableHead className="text-right text-xs">Prix</TableHead>
                 <TableHead className="text-right text-xs">Bid</TableHead>
                 <TableHead className="text-right text-xs">Ask</TableHead>
-                <TableHead className="text-right text-xs">IV</TableHead>
-                <TableHead className="text-right text-xs border-r border-border">Vol</TableHead>
+                <TableHead className="text-right text-xs">Vol</TableHead>
+                <TableHead className="text-right text-xs border-r border-border">IV</TableHead>
                 {/* Strike */}
                 <TableHead className="text-center font-bold bg-muted"></TableHead>
+                <TableHead className="text-center font-bold bg-muted border-r border-border"></TableHead>
                 {/* Put headers */}
-                <TableHead className="text-right text-xs">Last</TableHead>
-                <TableHead className="text-right text-xs">Chg%</TableHead>
+                <TableHead className="text-right text-xs">Vol</TableHead>
                 <TableHead className="text-right text-xs">Bid</TableHead>
                 <TableHead className="text-right text-xs">Ask</TableHead>
+                <TableHead className="text-right text-xs">Prix</TableHead>
+                <TableHead className="text-right text-xs">Delta</TableHead>
+                <TableHead className="text-right text-xs">Gamma</TableHead>
+                <TableHead className="text-right text-xs">Theta</TableHead>
                 <TableHead className="text-right text-xs">IV</TableHead>
-                <TableHead className="text-right text-xs">Vol</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {allStrikes.map((strike) => {
                 const call = getCallByStrike(strike);
                 const put = getPutByStrike(strike);
+                const avgIV = call?.iv || put?.iv || 0;
 
                 return (
                   <TableRow key={strike} className="hover:bg-muted/30">
                     {/* Call data */}
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(call?.theta)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(call?.gamma)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(call?.delta)}
+                    </TableCell>
                     <TableCell className="text-right font-mono text-sm">
                       {formatValue(call?.last)}
-                    </TableCell>
-                    <TableCell className={`text-right font-mono text-sm ${
-                      call?.changePercent?.includes('-') ? 'text-destructive' : 'text-success'
-                    }`}>
-                      {formatValue(call?.changePercent)}
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm text-muted-foreground">
                       {formatValue(call?.bid)}
@@ -98,26 +116,24 @@ export function TVForexOptionsTable({ calls, puts }: TVForexOptionsTableProps) {
                     <TableCell className="text-right font-mono text-sm text-muted-foreground">
                       {formatValue(call?.ask)}
                     </TableCell>
-                    <TableCell className="text-right font-mono text-sm text-primary">
-                      {formatIV(call?.iv)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-sm border-r border-border">
+                    <TableCell className="text-right font-mono text-sm">
                       {formatValue(call?.volume)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm text-primary border-r border-border">
+                      {formatIV(call?.iv)}
                     </TableCell>
                     
                     {/* Strike */}
                     <TableCell className="text-center font-bold bg-muted/50">
                       {strike.toFixed(4)}
                     </TableCell>
+                    <TableCell className="text-center font-mono text-sm text-primary bg-muted/50 border-r border-border">
+                      {avgIV > 0 ? `${avgIV.toFixed(1)}%` : '-'}
+                    </TableCell>
                     
                     {/* Put data */}
                     <TableCell className="text-right font-mono text-sm">
-                      {formatValue(put?.last)}
-                    </TableCell>
-                    <TableCell className={`text-right font-mono text-sm ${
-                      put?.changePercent?.includes('-') ? 'text-destructive' : 'text-success'
-                    }`}>
-                      {formatValue(put?.changePercent)}
+                      {formatValue(put?.volume)}
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm text-muted-foreground">
                       {formatValue(put?.bid)}
@@ -125,11 +141,20 @@ export function TVForexOptionsTable({ calls, puts }: TVForexOptionsTableProps) {
                     <TableCell className="text-right font-mono text-sm text-muted-foreground">
                       {formatValue(put?.ask)}
                     </TableCell>
+                    <TableCell className="text-right font-mono text-sm">
+                      {formatValue(put?.last)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(put?.delta)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(put?.gamma)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {formatGreek(put?.theta)}
+                    </TableCell>
                     <TableCell className="text-right font-mono text-sm text-primary">
                       {formatIV(put?.iv)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-sm">
-                      {formatValue(put?.volume)}
                     </TableCell>
                   </TableRow>
                 );

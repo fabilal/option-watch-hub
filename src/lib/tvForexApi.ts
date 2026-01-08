@@ -33,12 +33,16 @@ export interface TVForexOptionContract {
   volume: string;
   openInterest: string;
   iv: number;
+  delta: string;
+  gamma: string;
+  theta: string;
 }
 
 export interface TVForexOptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
   expirationDate: string;
+  maturities: string[];
   calls: TVForexOptionContract[];
   puts: TVForexOptionContract[];
 }
@@ -47,6 +51,7 @@ export interface TVForexOptionsChain {
 const symbolsInflight = new Map<string, Promise<TVForexSymbol[]>>();
 const futuresInflight = new Map<string, Promise<TVForexFutures[]>>();
 const optionsInflight = new Map<string, Promise<TVForexOptionsChain | null>>();
+const maturitiesInflight = new Map<string, Promise<string[]>>();
 
 // Default symbols if API fails
 const DEFAULT_SYMBOLS: TVForexSymbol[] = [
@@ -143,8 +148,57 @@ export async function fetchTVForexFutures(symbol: TVForexSymbol): Promise<TVFore
   return promise;
 }
 
-export async function fetchTVForexOptions(symbol: TVForexSymbol): Promise<TVForexOptionsChain | null> {
-  const cacheKey = `tv-forex-options-${symbol.exchange}-${symbol.symbol}`;
+// Fetch available maturities for options
+export async function fetchTVForexOptionsMaturities(symbol: TVForexSymbol): Promise<string[]> {
+  const cacheKey = `tv-forex-options-maturities-${symbol.exchange}-${symbol.symbol}`;
+  
+  const existing = maturitiesInflight.get(cacheKey);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async (): Promise<string[]> => {
+    try {
+      console.log(`Fetching TV forex options maturities for ${symbol.symbol}...`);
+      
+      const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
+        body: { 
+          symbol: symbol.symbol, 
+          exchange: symbol.exchange,
+          fetchMaturitiesOnly: true
+        },
+      });
+
+      if (error) {
+        console.error('Edge function error:', error);
+        return [];
+      }
+
+      if (!data?.success || !data?.data?.maturities) {
+        console.warn('No TV forex options maturities returned');
+        return [];
+      }
+
+      console.log(`Fetched ${data.data.maturities.length} maturities`);
+      return data.data.maturities;
+    } catch (err) {
+      console.error('Failed to fetch TV forex options maturities:', err);
+      return [];
+    } finally {
+      maturitiesInflight.delete(cacheKey);
+    }
+  })();
+
+  maturitiesInflight.set(cacheKey, promise);
+  return promise;
+}
+
+// Fetch options chain for a specific maturity
+export async function fetchTVForexOptions(
+  symbol: TVForexSymbol, 
+  maturity?: string
+): Promise<TVForexOptionsChain | null> {
+  const cacheKey = `tv-forex-options-${symbol.exchange}-${symbol.symbol}${maturity ? `-${maturity}` : ''}`;
   
   const existing = optionsInflight.get(cacheKey);
   if (existing) {
@@ -153,10 +207,14 @@ export async function fetchTVForexOptions(symbol: TVForexSymbol): Promise<TVFore
 
   const promise = (async (): Promise<TVForexOptionsChain | null> => {
     try {
-      console.log(`Fetching TV forex options for ${symbol.symbol}...`);
+      console.log(`Fetching TV forex options for ${symbol.symbol}, maturity: ${maturity || 'default'}...`);
       
       const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
-        body: { symbol: symbol.symbol, exchange: symbol.exchange },
+        body: { 
+          symbol: symbol.symbol, 
+          exchange: symbol.exchange,
+          maturity: maturity
+        },
       });
 
       if (error) {
