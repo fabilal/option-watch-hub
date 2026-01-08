@@ -35,8 +35,8 @@ type CacheEntry = {
   data: FuturesPricesResponse;
 };
 
-const CACHE_TTL_MS = 60_000; // 1 minute cache
-const NEGATIVE_CACHE_TTL_MS = 10_000;
+const CACHE_TTL_MS = 5 * 60_000; // 5 minutes cache (reduce scrape volume)
+const NEGATIVE_CACHE_TTL_MS = 30_000;
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<FuturesPricesResponse>>();
 
@@ -85,13 +85,28 @@ serve(async (req) => {
     const existingPromise = inflight.get(cacheKey);
     const isOwner = !existingPromise;
 
-    const buildScrapeBody = (waitFor: number) => ({
+    const isTimeoutError = (scrapeData: any) => {
+      const msg: string | undefined = scrapeData?.error;
+      return (
+        (typeof scrapeData?.code === 'string' && scrapeData.code.toUpperCase().includes('TIMEOUT')) ||
+        (typeof msg === 'string' && msg.toLowerCase().includes('timed out'))
+      );
+    };
+
+    const buildHtmlScrapeBody = (waitFor: number) => ({
+      url,
+      formats: ['html'],
+      onlyMainContent: true,
+      waitFor,
+    });
+
+    const buildExtractScrapeBody = (waitFor: number) => ({
       url,
       // Keep the request as small as possible to reduce timeouts
       formats: ['extract'],
       extract: {
         prompt:
-          'Extract ALL futures contracts from the Futures Prices table. Include EVERY row from the table (20-30+ rows is normal). Return JSON as {"futures":[{"contract":"CLG26","month":"Feb \'26","last":"57.42","change":"-0.54","percentChange":"-0.93%","open":"57.41","high":"57.93","low":"56.60","volume":"140710","openInterest":"312245","time":"13:15 CT"}]}. Include contracts for multiple years (2026, 2027, 2028, etc). Do NOT skip any rows.',
+          'Extract ALL futures contracts from the Futures Prices table and return JSON as {"futures":[{"contract":"CLG26","month":"Feb \'26","last":"57.42","change":"-0.54","percentChange":"-0.93%","open":"57.41","high":"57.93","low":"56.60","volume":"140710","openInterest":"312245","time":"13:15 CT"}]}. Do NOT skip any rows.',
         schema: {
           type: 'object',
           properties: {
@@ -121,14 +136,14 @@ serve(async (req) => {
       waitFor,
     });
 
-    const tryScrape = async (waitFor: number) => {
+    const tryScrape = async (body: Record<string, unknown>) => {
       const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(buildScrapeBody(waitFor)),
+        body: JSON.stringify(body),
       });
 
       const scrapeData = await scrapeResponse.json();
@@ -139,18 +154,37 @@ serve(async (req) => {
       existingPromise ??
       (async (): Promise<FuturesPricesResponse> => {
         try {
-          // First attempt: small wait to let the table render.
-          let { scrapeResponse, scrapeData } = await tryScrape(1500);
+          // 1) Fast path: HTML scrape + deterministic parsing (no LLM extraction)
+          let { scrapeResponse, scrapeData } = await tryScrape(buildHtmlScrapeBody(1500));
 
-          // Retry once on timeout with no waiting (often faster).
-          const msg1: string | undefined = scrapeData?.error;
-          const isTimeout =
-            (typeof scrapeData?.code === 'string' && scrapeData.code.toUpperCase().includes('TIMEOUT')) ||
-            (typeof msg1 === 'string' && msg1.toLowerCase().includes('timed out'));
+          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeoutError(scrapeData)) {
+            console.warn('Firecrawl HTML scrape timed out; retrying once with waitFor=0');
+            ({ scrapeResponse, scrapeData } = await tryScrape(buildHtmlScrapeBody(0)));
+          }
 
-          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeout) {
-            console.warn('Firecrawl timed out; retrying once with waitFor=0');
-            ({ scrapeResponse, scrapeData } = await tryScrape(0));
+          if (scrapeResponse.ok && scrapeData.success) {
+            const html: string = scrapeData.data?.html || scrapeData.html || '';
+            const htmlFutures = parseFuturesFromHtml(html);
+
+            if (htmlFutures.length > 0) {
+              console.log(`Extracted ${htmlFutures.length} futures contracts via HTML parsing`);
+              return {
+                success: true,
+                symbol,
+                name: name || symbol,
+                futures: htmlFutures,
+              };
+            }
+
+            console.warn('HTML scrape succeeded but no futures rows parsed; falling back to extract');
+          }
+
+          // 2) Fallback: Firecrawl extract (LLM-based)
+          ({ scrapeResponse, scrapeData } = await tryScrape(buildExtractScrapeBody(1500)));
+
+          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeoutError(scrapeData)) {
+            console.warn('Firecrawl extract timed out; retrying once with waitFor=0');
+            ({ scrapeResponse, scrapeData } = await tryScrape(buildExtractScrapeBody(0)));
           }
 
           if (!scrapeResponse.ok || !scrapeData.success) {
@@ -171,7 +205,7 @@ serve(async (req) => {
             };
           }
 
-          console.log('Scrape successful, parsing futures data...');
+          console.log('Scrape successful (extract), parsing futures data...');
 
           const extractedJson = scrapeData.data?.extract || scrapeData.extract || null;
           const jsonFutures = parseFuturesFromExtractedJson(extractedJson);
@@ -268,6 +302,67 @@ function extractRetryAfterSeconds(message?: string): number | null {
   if (!message) return null;
   const match = message.match(/retry after\s*(\d+)s/i) || message.match(/after\s*(\d+)s/i);
   return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function parseFuturesFromHtml(html: string): FuturesPrice[] {
+  if (!html) return [];
+
+  const rowPattern = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
+  const rows = html.match(rowPattern) || [];
+
+  const contractRegex = /^([A-Z]{2,4}[FGHJKMNQUVXZ]\d{2})$/;
+
+  const strip = (s: string) =>
+    s
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const parseCells = (row: string) => {
+    const cellPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    const cells: string[] = [];
+    let m;
+    while ((m = cellPattern.exec(row)) !== null) {
+      cells.push(strip(m[1] ?? ''));
+    }
+    return cells;
+  };
+
+  const futures: FuturesPrice[] = [];
+
+  for (const row of rows) {
+    if (row.includes('<th')) continue;
+
+    const cells = parseCells(row);
+    if (cells.length < 6) continue;
+
+    const contract = (cells[0] || '').replace(/\s/g, '');
+    if (!contractRegex.test(contract)) continue;
+
+    futures.push({
+      contract,
+      month: cells[1] || '',
+      last: cells[2] || '',
+      change: cells[3] || '',
+      percentChange: cells[4] || '',
+      open: cells[5] || '',
+      high: cells[6] || '',
+      low: cells[7] || '',
+      volume: cells[8] || '',
+      openInterest: cells[9] || '',
+      time: cells[10] || '',
+    });
+  }
+
+  // Deduplicate by contract
+  const seen = new Set<string>();
+  return futures.filter((r) => {
+    if (seen.has(r.contract)) return false;
+    seen.add(r.contract);
+    return true;
+  });
 }
 
 function parseFuturesFromExtractedJson(extracted: unknown): FuturesPrice[] {

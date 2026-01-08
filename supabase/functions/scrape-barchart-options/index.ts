@@ -126,7 +126,67 @@ serve(async (req) => {
       existingPromise ??
       (async (): Promise<OptionsChainResponse> => {
         try {
-          // Use JSON extraction for structured data
+          const isTimeoutError = (scrapeData: any) => {
+            const msg: string | undefined = scrapeData?.error;
+            return (
+              (typeof scrapeData?.code === 'string' && scrapeData.code.toUpperCase().includes('TIMEOUT')) ||
+              (typeof msg === 'string' && msg.toLowerCase().includes('timed out'))
+            );
+          };
+
+          const tryScrape = async (body: Record<string, unknown>) => {
+            const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(body),
+            });
+
+            const scrapeData = await scrapeResponse.json();
+            return { scrapeResponse, scrapeData };
+          };
+
+          // 1) Fast path: HTML scrape + deterministic parsing (no LLM extraction)
+          console.log('Starting Firecrawl HTML scrape (fast path)...');
+
+          let { scrapeResponse, scrapeData } = await tryScrape({
+            url,
+            formats: ['html'],
+            onlyMainContent: true,
+            waitFor: 2000,
+          });
+
+          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeoutError(scrapeData)) {
+            console.warn('Firecrawl HTML scrape timed out; retrying once with waitFor=0');
+            ({ scrapeResponse, scrapeData } = await tryScrape({
+              url,
+              formats: ['html'],
+              onlyMainContent: true,
+              waitFor: 0,
+            }));
+          }
+
+          if (scrapeResponse.ok && scrapeData.success) {
+            const html = scrapeData.data?.html || scrapeData.html || '';
+            const parsedFromHtml = parseOptionsFromHtml(
+              html,
+              fullSymbol,
+              name || fullSymbol,
+              optionPointValue || 1000,
+              {}
+            );
+
+            if (parsedFromHtml.calls.length > 0 || parsedFromHtml.puts.length > 0) {
+              console.log(`HTML parsing - Calls: ${parsedFromHtml.calls.length}, Puts: ${parsedFromHtml.puts.length}`);
+              return parsedFromHtml;
+            }
+
+            console.warn('HTML scrape succeeded but no rows parsed; falling back to extract');
+          }
+
+          // 2) Fallback: JSON extraction (LLM-based)
           const extractionSchema = {
             type: "object",
             properties: {
@@ -157,34 +217,34 @@ serve(async (req) => {
             required: ["options"]
           };
 
-          console.log('Starting Firecrawl extraction...');
+          console.log('Starting Firecrawl extraction (fallback)...');
 
-          const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
+          ({ scrapeResponse, scrapeData } = await tryScrape({
+            url,
+            formats: ['extract'],
+            extract: {
+              schema: extractionSchema,
+              prompt:
+                `Extract ALL options rows from the Calls table and the Puts table (do not skip strikes). For each row: strike, type (Call/Put), latest, iv, delta, gamma, theta, vega, ivSkew, lastTrade. Also extract daysToExpiration, impliedVolatility, maturity.`
             },
-            body: JSON.stringify({
+            onlyMainContent: true,
+            waitFor: 2000,
+          }));
+
+          if ((!scrapeResponse.ok || !scrapeData.success) && isTimeoutError(scrapeData)) {
+            console.warn('Firecrawl extract timed out; retrying once with waitFor=0');
+            ({ scrapeResponse, scrapeData } = await tryScrape({
               url,
               formats: ['extract'],
               extract: {
                 schema: extractionSchema,
-                prompt: `Extract ALL options data from this commodity options page. 
-                
-CRITICAL INSTRUCTIONS:
-1. Find the "Calls" table and extract EVERY row (all strikes, all data)
-2. Find the "Puts" table and extract EVERY row (all strikes, all data)
-3. For each option, extract: strike, type (Call or Put), latest price, IV, delta, gamma, theta, vega, IV skew, last trade date
-4. Also extract: days to expiration, overall implied volatility, and maturity date
-5. DO NOT skip any rows. There should be 20-50+ options total.
-6. If a value is missing or shows "-" or "unch", use 0 for numbers or empty string for text.`
+                prompt:
+                  `Extract ALL options rows from the Calls table and the Puts table (do not skip strikes). For each row: strike, type (Call/Put), latest, iv, delta, gamma, theta, vega, ivSkew, lastTrade. Also extract daysToExpiration, impliedVolatility, maturity.`
               },
-              waitFor: 3000,
-            }),
-          });
-
-          const scrapeData = await scrapeResponse.json();
+              onlyMainContent: true,
+              waitFor: 0,
+            }));
+          }
 
           if (!scrapeResponse.ok || !scrapeData.success) {
             const msg: string | undefined = scrapeData?.error;
@@ -212,9 +272,6 @@ CRITICAL INSTRUCTIONS:
           console.log('Extraction successful, processing data...');
 
           const extractedData: ExtractedData = scrapeData.data?.extract || scrapeData.extract || {};
-          
-          console.log(`Extracted data keys: ${Object.keys(extractedData).join(', ')}`);
-          console.log(`Options count: ${extractedData.options?.length || 0}`);
 
           // Process extracted options
           const calls: OptionData[] = [];
@@ -246,39 +303,6 @@ CRITICAL INSTRUCTIONS:
           }
 
           console.log(`Processed - Calls: ${calls.length}, Puts: ${puts.length}`);
-
-          // If extraction failed to get options, try markdown parsing as fallback
-          if (calls.length === 0 && puts.length === 0) {
-            console.log('JSON extraction returned no options, trying markdown fallback...');
-            
-            const fallbackResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                url,
-                formats: ['html'],
-                waitFor: 3000,
-              }),
-            });
-
-            const fallbackData = await fallbackResponse.json();
-            
-            if (fallbackResponse.ok && fallbackData.success) {
-              const html = fallbackData.data?.html || fallbackData.html || '';
-              console.log(`HTML length: ${html.length}`);
-              
-              // Parse HTML tables directly
-              const parsedFromHtml = parseOptionsFromHtml(html, fullSymbol, name || fullSymbol, optionPointValue || 1000, extractedData);
-              
-              if (parsedFromHtml.calls.length > 0 || parsedFromHtml.puts.length > 0) {
-                console.log(`HTML parsing - Calls: ${parsedFromHtml.calls.length}, Puts: ${parsedFromHtml.puts.length}`);
-                return parsedFromHtml;
-              }
-            }
-          }
 
           return {
             success: calls.length > 0 || puts.length > 0,
