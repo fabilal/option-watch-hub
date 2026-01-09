@@ -25,24 +25,25 @@ export interface TVForexOptionContract {
   strike: number;
   type: 'Call' | 'Put';
   symbol: string;
+  expiration: string;
   last: string;
-  change: string;
-  changePercent: string;
   bid: string;
   ask: string;
   volume: string;
-  openInterest: string;
   iv: number;
-  delta: string;
-  gamma: string;
-  theta: string;
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  rho: number;
 }
 
 export interface TVForexOptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
-  expirationDate: string;
   maturities: string[];
+  strikes: number[];
+  selectedStrike: number | null;
   calls: TVForexOptionContract[];
   puts: TVForexOptionContract[];
 }
@@ -51,7 +52,7 @@ export interface TVForexOptionsChain {
 const symbolsInflight = new Map<string, Promise<TVForexSymbol[]>>();
 const futuresInflight = new Map<string, Promise<TVForexFutures[]>>();
 const optionsInflight = new Map<string, Promise<TVForexOptionsChain | null>>();
-const maturitiesInflight = new Map<string, Promise<string[]>>();
+const strikesInflight = new Map<string, Promise<number[]>>();
 
 // Default symbols if API fails
 const DEFAULT_SYMBOLS: TVForexSymbol[] = [
@@ -148,24 +149,24 @@ export async function fetchTVForexFutures(symbol: TVForexSymbol): Promise<TVFore
   return promise;
 }
 
-// Fetch available maturities for options
-export async function fetchTVForexOptionsMaturities(symbol: TVForexSymbol): Promise<string[]> {
-  const cacheKey = `tv-forex-options-maturities-${symbol.exchange}-${symbol.symbol}`;
+// Fetch available strikes for options (fast call)
+export async function fetchTVForexOptionsStrikes(symbol: TVForexSymbol): Promise<number[]> {
+  const cacheKey = `tv-forex-options-strikes-${symbol.exchange}-${symbol.symbol}`;
   
-  const existing = maturitiesInflight.get(cacheKey);
+  const existing = strikesInflight.get(cacheKey);
   if (existing) {
     return existing;
   }
 
-  const promise = (async (): Promise<string[]> => {
+  const promise = (async (): Promise<number[]> => {
     try {
-      console.log(`Fetching TV forex options maturities for ${symbol.symbol}...`);
+      console.log(`Fetching TV forex options strikes for ${symbol.symbol}...`);
       
       const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
         body: { 
           symbol: symbol.symbol, 
           exchange: symbol.exchange,
-          fetchMaturitiesOnly: true
+          fetchStrikesOnly: true
         },
       });
 
@@ -174,31 +175,31 @@ export async function fetchTVForexOptionsMaturities(symbol: TVForexSymbol): Prom
         return [];
       }
 
-      if (!data?.success || !data?.data?.maturities) {
-        console.warn('No TV forex options maturities returned');
+      if (!data?.success || !data?.data?.strikes) {
+        console.warn('No TV forex options strikes returned');
         return [];
       }
 
-      console.log(`Fetched ${data.data.maturities.length} maturities`);
-      return data.data.maturities;
+      console.log(`Fetched ${data.data.strikes.length} strikes`);
+      return data.data.strikes;
     } catch (err) {
-      console.error('Failed to fetch TV forex options maturities:', err);
+      console.error('Failed to fetch TV forex options strikes:', err);
       return [];
     } finally {
-      maturitiesInflight.delete(cacheKey);
+      strikesInflight.delete(cacheKey);
     }
   })();
 
-  maturitiesInflight.set(cacheKey, promise);
+  strikesInflight.set(cacheKey, promise);
   return promise;
 }
 
-// Fetch options chain for a specific maturity
+// Fetch options chain for a specific strike
 export async function fetchTVForexOptions(
   symbol: TVForexSymbol, 
-  maturity?: string
+  strike?: number
 ): Promise<TVForexOptionsChain | null> {
-  const cacheKey = `tv-forex-options-${symbol.exchange}-${symbol.symbol}${maturity ? `-${maturity}` : ''}`;
+  const cacheKey = `tv-forex-options-${symbol.exchange}-${symbol.symbol}${strike ? `-${strike}` : ''}`;
   
   const existing = optionsInflight.get(cacheKey);
   if (existing) {
@@ -207,13 +208,13 @@ export async function fetchTVForexOptions(
 
   const promise = (async (): Promise<TVForexOptionsChain | null> => {
     try {
-      console.log(`Fetching TV forex options for ${symbol.symbol}, maturity: ${maturity || 'default'}...`);
+      console.log(`Fetching TV forex options for ${symbol.symbol}, strike: ${strike || 'default'}...`);
       
       const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
         body: { 
           symbol: symbol.symbol, 
           exchange: symbol.exchange,
-          maturity: maturity
+          strike: strike
         },
       });
 
