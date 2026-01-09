@@ -92,14 +92,24 @@ export default function TradingView() {
   }, [symbol, toast]);
 
   // Load options data when symbol changes
-  const loadOptions = useCallback(async (strike?: number) => {
+  const loadOptions = useCallback(async (maturity?: string) => {
     if (!symbol) return;
 
     setIsLoadingOptions(true);
     setError(null);
     try {
-      const data = await fetchTVOptions(symbol, strike);
+      const data = await fetchTVOptions(symbol, maturity);
       setOptions(data);
+
+      // Ensure selected maturity stays valid for the current symbol
+      if (data?.maturities?.length) {
+        const next =
+          (maturity && data.maturities.includes(maturity) ? maturity : undefined) ||
+          (selectedMaturity && data.maturities.includes(selectedMaturity) ? selectedMaturity : undefined) ||
+          data.selectedMaturity ||
+          data.maturities[0];
+        if (next && next !== selectedMaturity) setSelectedMaturity(next);
+      }
 
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
@@ -118,7 +128,7 @@ export default function TradingView() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast]);
+  }, [symbol, toast, selectedMaturity]);
 
   // Load data when symbol changes
   useEffect(() => {
@@ -127,15 +137,21 @@ export default function TradingView() {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions();
+      loadOptions(selectedMaturity || undefined);
     }
   }, [symbol, activeTab, loadFutures, loadOptions]);
+
+  // Reload options when maturity changes
+  const handleMaturityChange = (maturity: string) => {
+    setSelectedMaturity(maturity);
+    loadOptions(maturity);
+  };
 
   const handleRefresh = () => {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions();
+      loadOptions(selectedMaturity || undefined);
     }
   };
 
@@ -169,7 +185,15 @@ export default function TradingView() {
               disabled={isLoadingSymbols}
             />
             
-            {/* Strike selector for options can be added here later */}
+            {/* Show maturity selector only for options tab */}
+            {activeTab === "options" && options && options.maturities.length > 0 && (
+              <TVMaturitySelector
+                maturities={options.maturities}
+                selected={selectedMaturity || options.maturities[0]}
+                onSelect={handleMaturityChange}
+                disabled={isLoadingOptions}
+              />
+            )}
             
             <div className="flex items-center gap-2 ml-auto">
               <Button

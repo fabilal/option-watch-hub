@@ -22,7 +22,7 @@ import {
   fetchTVForexSymbols,
   fetchTVForexFutures,
   fetchTVForexOptions,
-  fetchTVForexOptionsStrikes,
+  fetchTVForexOptionsMaturities,
   type TVForexSymbol,
   type TVForexFutures,
   type TVForexOptionsChain,
@@ -155,32 +155,42 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
-  // Load TradingView options strikes
-  const loadTVStrikes = useCallback(async () => {
+  // Load TradingView options maturities
+  const loadTVMaturities = useCallback(async () => {
     if (!tvSymbol) return;
 
+    setIsLoadingTVMaturities(true);
     try {
-      const strikes = await fetchTVForexOptionsStrikes(tvSymbol);
-      console.log(`Loaded ${strikes.length} TV strikes`);
+      const mats = await fetchTVForexOptionsMaturities(tvSymbol);
+      setTVMaturities(mats);
+      
+      // Auto-select first maturity if available
+      if (mats.length > 0 && !tvSelectedMaturity) {
+        setTVSelectedMaturity(mats[0]);
+      }
+      
+      console.log(`Loaded ${mats.length} TV maturities`);
     } catch (err) {
-      console.error('Failed to load TV strikes:', err);
+      console.error('Failed to load TV maturities:', err);
+    } finally {
+      setIsLoadingTVMaturities(false);
     }
-  }, [tvSymbol]);
+  }, [tvSymbol, tvSelectedMaturity]);
 
-  // Load TradingView options when symbol changes
-  const loadTVOptions = useCallback(async () => {
+  // Load TradingView options when symbol or maturity changes
+  const loadTVOptions = useCallback(async (maturity?: string) => {
     if (!tvSymbol) return;
 
     setIsLoadingTVOptions(true);
     setTVError(null);
     try {
-      const data = await fetchTVForexOptions(tvSymbol);
+      const data = await fetchTVForexOptions(tvSymbol, maturity);
       setTVOptions(data);
       
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options TradingView chargées",
-          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}`,
+          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}${maturity ? ` (${maturity})` : ''}`,
         });
       }
     } catch (err) {
@@ -202,11 +212,18 @@ export default function Forex() {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        loadTVStrikes();
-        loadTVOptions();
+        // Load maturities first, then options
+        loadTVMaturities();
+        loadTVOptions(tvSelectedMaturity || undefined);
       }
     }
-  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVStrikes, loadTVOptions]);
+  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVMaturities, loadTVOptions, tvSelectedMaturity]);
+
+  // Handle TV maturity change
+  const handleTVMaturityChange = (maturity: string) => {
+    setTVSelectedMaturity(maturity);
+    loadTVOptions(maturity);
+  };
 
   // Load Barchart futures data when symbol changes
   const loadFutures = useCallback(async () => {
@@ -302,7 +319,8 @@ export default function Forex() {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        loadTVOptions();
+        loadTVMaturities();
+        loadTVOptions(tvSelectedMaturity || undefined);
       }
     } else if (activeTab === "futures") {
       loadFutures();
@@ -362,7 +380,16 @@ export default function Forex() {
                 disabled={isLoadingTVSymbols}
               />
               
-              {/* Strike selector can be added here later */}
+              {/* Show maturity selector for options tab */}
+              {tvActiveTab === "options" && (
+                <TVForexMaturitySelector
+                  maturities={tvMaturities}
+                  selected={tvSelectedMaturity}
+                  onSelect={handleTVMaturityChange}
+                  disabled={isLoadingTVOptions}
+                  isLoading={isLoadingTVMaturities}
+                />
+              )}
               
               <div className="flex items-center gap-2 ml-auto">
                 <Button

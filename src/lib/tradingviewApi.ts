@@ -34,7 +34,6 @@ export interface TVOptionContract {
   strike: number;
   type: 'Call' | 'Put';
   symbol: string;
-  expiration: string;
   last: string;
   bid: string;
   ask: string;
@@ -44,16 +43,13 @@ export interface TVOptionContract {
   gamma: number;
   theta: number;
   vega: number;
-  rho: number;
 }
 
 export interface TVOptionsChain {
   underlyingSymbol: string;
   underlyingPrice: string;
   maturities: string[];
-  strikes: number[];
   selectedMaturity: string;
-  selectedStrike: number | null;
   calls: TVOptionContract[];
   puts: TVOptionContract[];
 }
@@ -62,7 +58,6 @@ export interface TVOptionsChain {
 const symbolsInflight = new Map<string, Promise<TVSymbol[]>>();
 const futuresInflight = new Map<string, Promise<TVFuturesContract[]>>();
 const optionsInflight = new Map<string, Promise<TVOptionsChain | null>>();
-const strikesInflight = new Map<string, Promise<number[]>>();
 
 /**
  * Fetch TradingView symbols for a category
@@ -144,55 +139,13 @@ export async function fetchTVFutures(symbol: TVSymbol): Promise<TVFuturesContrac
 }
 
 /**
- * Fetch available strikes for options (fast call)
- */
-export async function fetchTVOptionsStrikes(symbol: TVSymbol): Promise<number[]> {
-  const cacheKey = `strikes-${symbol.exchange}-${symbol.symbol}`;
-  
-  if (strikesInflight.has(cacheKey)) {
-    return strikesInflight.get(cacheKey)!;
-  }
-
-  const promise = (async () => {
-    try {
-      const { data, error } = await supabase.functions.invoke('scrape-tradingview-options', {
-        body: { 
-          exchange: symbol.exchange, 
-          symbol: symbol.symbol,
-          fetchStrikesOnly: true
-        },
-      });
-
-      if (error) {
-        console.error('Error fetching TV options strikes:', error);
-        return [];
-      }
-
-      if (data?.success && data?.data?.strikes) {
-        return data.data.strikes as number[];
-      }
-
-      return [];
-    } catch (err) {
-      console.error('Failed to fetch TV options strikes:', err);
-      return [];
-    } finally {
-      strikesInflight.delete(cacheKey);
-    }
-  })();
-
-  strikesInflight.set(cacheKey, promise);
-  return promise;
-}
-
-/**
- * Fetch TradingView options chain for a symbol and strike
+ * Fetch TradingView options chain for a symbol
  */
 export async function fetchTVOptions(
   symbol: TVSymbol, 
-  strike?: number
+  maturity?: string
 ): Promise<TVOptionsChain | null> {
-  const cacheKey = `${symbol.exchange}-${symbol.symbol}-${strike || 'default'}`;
+  const cacheKey = `${symbol.exchange}-${symbol.symbol}-${maturity || 'default'}`;
   
   if (optionsInflight.has(cacheKey)) {
     return optionsInflight.get(cacheKey)!;
@@ -204,7 +157,7 @@ export async function fetchTVOptions(
         body: { 
           exchange: symbol.exchange, 
           symbol: symbol.symbol,
-          strike,
+          maturity,
         },
       });
 

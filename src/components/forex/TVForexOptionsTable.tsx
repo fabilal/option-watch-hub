@@ -31,9 +31,9 @@ export function TVForexOptionsTable({ calls, puts }: TVForexOptionsTableProps) {
     return `${iv.toFixed(1)}%`;
   };
 
-  const formatGreek = (value: number | string | undefined) => {
-    if (value === undefined || value === 0 || value === '0') return '-';
-    return typeof value === 'number' ? value.toFixed(4) : value;
+  const formatGreek = (value: string | undefined) => {
+    if (!value || value === '0') return '-';
+    return value;
   };
 
   return (
