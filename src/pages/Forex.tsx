@@ -155,42 +155,32 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
-  // Load TradingView options maturities
-  const loadTVMaturities = useCallback(async () => {
+  // Load TradingView options strikes
+  const loadTVStrikes = useCallback(async () => {
     if (!tvSymbol) return;
 
-    setIsLoadingTVMaturities(true);
     try {
-      const mats = await fetchTVForexOptionsMaturities(tvSymbol);
-      setTVMaturities(mats);
-      
-      // Auto-select first maturity if available
-      if (mats.length > 0 && !tvSelectedMaturity) {
-        setTVSelectedMaturity(mats[0]);
-      }
-      
-      console.log(`Loaded ${mats.length} TV maturities`);
+      const strikes = await fetchTVForexOptionsStrikes(tvSymbol);
+      console.log(`Loaded ${strikes.length} TV strikes`);
     } catch (err) {
-      console.error('Failed to load TV maturities:', err);
-    } finally {
-      setIsLoadingTVMaturities(false);
+      console.error('Failed to load TV strikes:', err);
     }
-  }, [tvSymbol, tvSelectedMaturity]);
+  }, [tvSymbol]);
 
-  // Load TradingView options when symbol or strike changes
-  const loadTVOptions = useCallback(async (strike?: number) => {
+  // Load TradingView options when symbol changes
+  const loadTVOptions = useCallback(async () => {
     if (!tvSymbol) return;
 
     setIsLoadingTVOptions(true);
     setTVError(null);
     try {
-      const data = await fetchTVForexOptions(tvSymbol, strike);
+      const data = await fetchTVForexOptions(tvSymbol);
       setTVOptions(data);
       
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
           title: "Options TradingView chargées",
-          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}${maturity ? ` (${maturity})` : ''}`,
+          description: `${data.calls.length} calls et ${data.puts.length} puts pour ${tvSymbol.name}`,
         });
       }
     } catch (err) {
@@ -212,18 +202,11 @@ export default function Forex() {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        // Load maturities first, then options
-        loadTVMaturities();
-        loadTVOptions(tvSelectedMaturity || undefined);
+        loadTVStrikes();
+        loadTVOptions();
       }
     }
-  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVMaturities, loadTVOptions, tvSelectedMaturity]);
-
-  // Handle TV maturity change
-  const handleTVMaturityChange = (maturity: string) => {
-    setTVSelectedMaturity(maturity);
-    loadTVOptions(maturity);
-  };
+  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVStrikes, loadTVOptions]);
 
   // Load Barchart futures data when symbol changes
   const loadFutures = useCallback(async () => {
@@ -379,16 +362,7 @@ export default function Forex() {
                 disabled={isLoadingTVSymbols}
               />
               
-              {/* Show maturity selector for options tab */}
-              {tvActiveTab === "options" && (
-                <TVForexMaturitySelector
-                  maturities={tvMaturities}
-                  selected={tvSelectedMaturity}
-                  onSelect={handleTVMaturityChange}
-                  disabled={isLoadingTVOptions}
-                  isLoading={isLoadingTVMaturities}
-                />
-              )}
+              {/* Strike selector can be added here later */}
               
               <div className="flex items-center gap-2 ml-auto">
                 <Button

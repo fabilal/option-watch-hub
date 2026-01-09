@@ -169,15 +169,7 @@ export default function TradingView() {
               disabled={isLoadingSymbols}
             />
             
-            {/* Show maturity selector only for options tab */}
-            {activeTab === "options" && options && options.maturities.length > 0 && (
-              <TVMaturitySelector
-                maturities={options.maturities}
-                selected={selectedMaturity || options.maturities[0]}
-                onSelect={handleMaturityChange}
-                disabled={isLoadingOptions}
-              />
-            )}
+            {/* Strike selector for options can be added here later */}
             
             <div className="flex items-center gap-2 ml-auto">
               <Button
