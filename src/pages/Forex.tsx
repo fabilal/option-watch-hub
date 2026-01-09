@@ -22,7 +22,7 @@ import {
   fetchTVForexSymbols,
   fetchTVForexFutures,
   fetchTVForexOptions,
-  fetchTVForexOptionsMaturities,
+  fetchTVForexOptionsStrikes,
   type TVForexSymbol,
   type TVForexFutures,
   type TVForexOptionsChain,
@@ -177,14 +177,14 @@ export default function Forex() {
     }
   }, [tvSymbol, tvSelectedMaturity]);
 
-  // Load TradingView options when symbol or maturity changes
-  const loadTVOptions = useCallback(async (maturity?: string) => {
+  // Load TradingView options when symbol or strike changes
+  const loadTVOptions = useCallback(async (strike?: number) => {
     if (!tvSymbol) return;
 
     setIsLoadingTVOptions(true);
     setTVError(null);
     try {
-      const data = await fetchTVForexOptions(tvSymbol, maturity);
+      const data = await fetchTVForexOptions(tvSymbol, strike);
       setTVOptions(data);
       
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
@@ -319,8 +319,7 @@ export default function Forex() {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        loadTVMaturities();
-        loadTVOptions(tvSelectedMaturity || undefined);
+        loadTVOptions();
       }
     } else if (activeTab === "futures") {
       loadFutures();

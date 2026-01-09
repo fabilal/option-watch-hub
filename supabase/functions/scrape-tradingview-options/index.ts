@@ -10,6 +10,7 @@ interface OptionContract {
   strike: number;
   type: 'Call' | 'Put';
   symbol: string;
+  expiration: string;
   last: string;
   bid: string;
   ask: string;
@@ -19,13 +20,16 @@ interface OptionContract {
   gamma: number;
   theta: number;
   vega: number;
+  rho: number;
 }
 
 interface OptionsChainData {
   underlyingSymbol: string;
   underlyingPrice: string;
   maturities: string[];
+  strikes: number[];
   selectedMaturity: string;
+  selectedStrike: number | null;
   calls: OptionContract[];
   puts: OptionContract[];
 }
@@ -36,8 +40,8 @@ interface CacheEntry {
   error?: string;
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const NEGATIVE_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<OptionsChainData | null>>();
@@ -52,13 +56,72 @@ function getFromCache(key: string): OptionsChainData | null | undefined {
   return entry.data;
 }
 
+// Schema for extracting strikes view data
+const strikesViewSchema = {
+  type: "object",
+  properties: {
+    currentStrike: {
+      type: "number",
+      description: "The currently selected/highlighted strike price shown at the top"
+    },
+    availableStrikes: {
+      type: "array",
+      description: "ALL strike prices shown in the horizontal header bar. There can be 100+ strikes. Extract ALL of them as numbers.",
+      items: { type: "number" }
+    },
+    underlyingPrice: {
+      type: "string",
+      description: "Current price of the underlying futures contract"
+    },
+    options: {
+      type: "array",
+      description: "ALL option rows from the table. Each row represents a different expiration date. Extract EVERY row - there can be 20-50+ expirations.",
+      items: {
+        type: "object",
+        properties: {
+          expiration: { type: "string", description: "Expiration date (e.g., '9 janv. 2026' or 'CLG2026')" },
+          symbol: { type: "string", description: "Contract symbol if shown" },
+          callBidIV: { type: "number", description: "Call Bid IV %" },
+          callAskIV: { type: "number", description: "Call Ask IV %" },
+          callIntrinsic: { type: "string", description: "Call intrinsic value" },
+          callTimeValue: { type: "string", description: "Call time value" },
+          callRho: { type: "number", description: "Call Rho" },
+          callVega: { type: "number", description: "Call Vega" },
+          callTheta: { type: "number", description: "Call Theta" },
+          callGamma: { type: "number", description: "Call Gamma" },
+          callDelta: { type: "number", description: "Call Delta" },
+          callPrice: { type: "string", description: "Call Prix/Price" },
+          callBid: { type: "string", description: "Call Demande/Bid" },
+          callAsk: { type: "string", description: "Call Offre/Ask" },
+          callVolume: { type: "string", description: "Call Volume" },
+          putVolume: { type: "string", description: "Put Volume" },
+          putAsk: { type: "string", description: "Put Offre/Ask" },
+          putBid: { type: "string", description: "Put Demande/Bid" },
+          putPrice: { type: "string", description: "Put Prix/Price" },
+          putDelta: { type: "number", description: "Put Delta" },
+          putGamma: { type: "number", description: "Put Gamma" },
+          putTheta: { type: "number", description: "Put Theta" },
+          putVega: { type: "number", description: "Put Vega" },
+          putRho: { type: "number", description: "Put Rho" },
+          putTimeValue: { type: "string", description: "Put time value" },
+          putIntrinsic: { type: "string", description: "Put intrinsic value" },
+          putBidIV: { type: "number", description: "Put Bid IV %" },
+          putAskIV: { type: "number", description: "Put Ask IV %" }
+        },
+        required: ["expiration"]
+      }
+    }
+  },
+  required: ["options"]
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { exchange, symbol, maturity } = await req.json();
+    const { exchange, symbol, strike, fetchStrikesOnly } = await req.json();
 
     if (!exchange || !symbol) {
       return new Response(
@@ -75,7 +138,9 @@ serve(async (req) => {
       );
     }
 
-    const cacheKey = `${exchange}-${symbol}-${maturity || 'default'}`;
+    const cacheKey = fetchStrikesOnly 
+      ? `tv-options-strikes-${exchange}-${symbol}`
+      : `tv-options-${exchange}-${symbol}-${strike || 'default'}`;
     
     const cached = getFromCache(cacheKey);
     if (cached !== undefined) {
@@ -95,12 +160,75 @@ serve(async (req) => {
       );
     }
 
-    // Use the new options chain URL format
-    const url = `https://fr.tradingview.com/options/chain/${exchange}-${symbol}/`;
-    console.log(`Scraping TradingView options chain: ${url}`);
+    // Use the strikes view URL format
+    let url = `https://fr.tradingview.com/options/chain/${exchange}-${symbol}/?view=strikes`;
+    if (strike) {
+      url += `&strike=${strike}`;
+    }
+    console.log(`Scraping TradingView options (strikes view): ${url}`);
 
     const scrapePromise = (async (): Promise<OptionsChainData | null> => {
       try {
+        // If only fetching strikes list, do a quick scrape
+        if (fetchStrikesOnly) {
+          const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              url,
+              formats: ['extract'],
+              extract: {
+                schema: {
+                  type: "object",
+                  properties: {
+                    strikes: {
+                      type: "array",
+                      description: "ALL strike prices from the horizontal strike selector bar at the top. Extract ALL numeric values - there can be 100+ strikes.",
+                      items: { type: "number" }
+                    },
+                    currentStrike: {
+                      type: "number", 
+                      description: "The currently selected/highlighted strike"
+                    }
+                  },
+                  required: ["strikes"]
+                },
+                prompt: `Extract ALL available strike prices from the horizontal bar at the top of the page.
+The strikes are shown as numbers like 0.50, 1.00, 1.50, 2.00, ... up to 100+.
+Extract EVERY strike shown - do not skip any.
+Also identify which strike is currently selected/highlighted.`
+              },
+              waitFor: 8000,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Firecrawl error: ${response.status}`);
+          }
+
+          const result = await response.json();
+          const extractData = result.data?.extract || result.extract || {};
+          
+          const data: OptionsChainData = {
+            underlyingSymbol: symbol,
+            underlyingPrice: '0',
+            maturities: [],
+            strikes: (extractData.strikes || []).filter((s: number) => s > 0).sort((a: number, b: number) => a - b),
+            selectedMaturity: '',
+            selectedStrike: extractData.currentStrike || null,
+            calls: [],
+            puts: [],
+          };
+
+          console.log(`Found ${data.strikes.length} strikes`);
+          cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data });
+          return data;
+        }
+
+        // Full options data extraction for a specific strike
         const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
           method: 'POST',
           headers: {
@@ -109,40 +237,125 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             url,
-            formats: ['markdown', 'html'],
-            onlyMainContent: true,
+            formats: ['extract'],
+            extract: {
+              schema: strikesViewSchema,
+              prompt: `CRITICAL: Extract ALL option data from this TradingView options chain page in STRIKES VIEW.
+
+The page shows options organized by STRIKE (selected at top) with multiple EXPIRATIONS (rows).
+
+Layout:
+- Top bar: Strike selector showing all available strikes (0.50, 1.00, 1.50, ... up to 100+)
+- Table header row: "Calls" on left, "Date d'expiration" in middle, "Puts" on right
+- Column headers (left to right for Calls): Bid IV%, Ask IV%, Valeur intr., Valeur temps, Rho, Vega, Theta, Gamma, Delta, Prix, Demande, Offre, Volume
+- Middle column: Date d'expiration (expiration date)
+- Column headers (left to right for Puts): Volume, Offre, Demande, Prix, Delta, Gamma, Theta, Vega, Rho, Valeur temps, Valeur intr., Ask IV%, Bid IV%
+
+Extract:
+1. ALL strike prices from the top selector bar
+2. The currently selected strike
+3. ALL option rows - each row is a different expiration date
+4. For each row: all Call data (left side), expiration date (middle), all Put data (right side)
+
+There can be 20-50+ expiration dates. Extract EVERY single one.
+Currently viewing strike: ${strike || 'default (center/ATM)'}
+
+French column names:
+- Prix = Price/Last
+- Demande = Bid
+- Offre = Ask
+- Valeur intr. = Intrinsic Value
+- Valeur temps = Time Value`
+            },
             waitFor: 12000,
           }),
         });
 
-        const data = await response.json();
-        
         if (!response.ok) {
-          console.error('Firecrawl error:', data);
-          cache.set(cacheKey, { 
-            expiresAt: Date.now() + NEGATIVE_CACHE_TTL_MS, 
-            data: null,
-            error: data.error 
-          });
-          return null;
+          const errorText = await response.text();
+          console.error('Firecrawl error:', errorText);
+          throw new Error(`Firecrawl error: ${response.status}`);
         }
 
-        const markdown = data.data?.markdown || data.markdown || '';
-        const html = data.data?.html || data.html || '';
-        console.log('Markdown length:', markdown.length, 'HTML length:', html.length);
+        const result = await response.json();
+        const extractData = result.data?.extract || result.extract || {};
         
-        // Log first 2000 chars of markdown for debugging
-        console.log('Markdown preview:', markdown.substring(0, 2000));
+        console.log(`Extract result: ${extractData.options?.length || 0} option rows, ${extractData.availableStrikes?.length || 0} strikes`);
+
+        const selectedStrikeValue = strike ? parseFloat(strike) : (extractData.currentStrike || null);
+        const options = extractData.options || [];
         
-        const optionsData = parseOptionsChain(markdown, html, symbol, exchange, maturity);
-        console.log(`Parsed: ${optionsData.calls.length} calls, ${optionsData.puts.length} puts, ${optionsData.maturities.length} maturities`);
+        // Convert options to calls and puts arrays
+        const calls: OptionContract[] = [];
+        const puts: OptionContract[] = [];
+        const maturities: string[] = [];
 
-        cache.set(cacheKey, { 
-          expiresAt: Date.now() + CACHE_TTL_MS, 
-          data: optionsData 
-        });
+        for (const opt of options) {
+          if (!opt.expiration) continue;
+          
+          const expDate = opt.expiration;
+          if (!maturities.includes(expDate)) {
+            maturities.push(expDate);
+          }
 
-        return optionsData;
+          // Call option
+          const callIV = computeIV(opt.callBidIV, opt.callAskIV);
+          if (opt.callPrice || opt.callBid || opt.callAsk || callIV > 0) {
+            calls.push({
+              strike: selectedStrikeValue || 0,
+              type: 'Call',
+              symbol: opt.symbol || '',
+              expiration: expDate,
+              last: normalizePrice(opt.callPrice),
+              bid: normalizePrice(opt.callBid),
+              ask: normalizePrice(opt.callAsk),
+              volume: normalizeVolume(opt.callVolume),
+              iv: callIV,
+              delta: opt.callDelta || 0,
+              gamma: opt.callGamma || 0,
+              theta: opt.callTheta || 0,
+              vega: opt.callVega || 0,
+              rho: opt.callRho || 0,
+            });
+          }
+
+          // Put option
+          const putIV = computeIV(opt.putBidIV, opt.putAskIV);
+          if (opt.putPrice || opt.putBid || opt.putAsk || putIV > 0) {
+            puts.push({
+              strike: selectedStrikeValue || 0,
+              type: 'Put',
+              symbol: opt.symbol || '',
+              expiration: expDate,
+              last: normalizePrice(opt.putPrice),
+              bid: normalizePrice(opt.putBid),
+              ask: normalizePrice(opt.putAsk),
+              volume: normalizeVolume(opt.putVolume),
+              iv: putIV,
+              delta: opt.putDelta || 0,
+              gamma: opt.putGamma || 0,
+              theta: opt.putTheta || 0,
+              vega: opt.putVega || 0,
+              rho: opt.putRho || 0,
+            });
+          }
+        }
+
+        const data: OptionsChainData = {
+          underlyingSymbol: symbol,
+          underlyingPrice: extractData.underlyingPrice || '0',
+          maturities,
+          strikes: (extractData.availableStrikes || []).filter((s: number) => s > 0).sort((a: number, b: number) => a - b),
+          selectedMaturity: '',
+          selectedStrike: selectedStrikeValue,
+          calls,
+          puts,
+        };
+
+        console.log(`Parsed: ${calls.length} calls, ${puts.length} puts, ${maturities.length} maturities, ${data.strikes.length} strikes`);
+
+        cache.set(cacheKey, { expiresAt: Date.now() + CACHE_TTL_MS, data });
+        return data;
       } catch (err) {
         console.error('Scrape error:', err);
         cache.set(cacheKey, { 
@@ -160,7 +373,7 @@ serve(async (req) => {
     const result = await scrapePromise;
 
     return new Response(
-      JSON.stringify({ success: true, data: result }),
+      JSON.stringify({ success: result !== null, data: result }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
@@ -173,249 +386,24 @@ serve(async (req) => {
   }
 });
 
-function parseOptionsChain(
-  markdown: string,
-  _html: string,
-  symbol: string,
-  _exchange: string,
-  requestedMaturity?: string
-): OptionsChainData {
-  const result: OptionsChainData = {
-    underlyingSymbol: symbol,
-    underlyingPrice: '0',
-    maturities: [],
-    selectedMaturity: requestedMaturity || '',
-    calls: [],
-    puts: [],
-  };
+function normalizePrice(val: any): string {
+  if (!val) return '0';
+  const s = String(val).trim();
+  if (s === '—' || s === '-' || s === '−' || s === '') return '0';
+  return s.replace(',', '.');
+}
 
-  // --- Maturities (best-effort from static markdown) ---
-  // We keep month + year chips like "janv. '26" / "mai '31"
-  const maturitySet = new Set<string>();
-  const maturityRe = /(janv|févr|mars|avr|mai|juin|juil|août|sept|oct|nov|déc)\.?\s*'?\s*(\d{2})/gi;
-  let mm: RegExpExecArray | null;
-  while ((mm = maturityRe.exec(markdown)) !== null) {
-    const m = mm[1].toLowerCase();
-    const y = mm[2];
-    maturitySet.add(`${m} '${y}`);
+function normalizeVolume(val: any): string {
+  if (!val) return '0';
+  const s = String(val).trim();
+  if (s === '—' || s === '-' || s === '−' || s === '') return '0';
+  // Remove spaces from numbers like "1 234"
+  return s.replace(/\s/g, '');
+}
+
+function computeIV(bidIV: number | undefined, askIV: number | undefined): number {
+  if (bidIV && askIV && bidIV > 0 && askIV > 0) {
+    return (bidIV + askIV) / 2;
   }
-  result.maturities = Array.from(maturitySet);
-
-  // If maturity in response isn't set, pick the first (stable) one.
-  if (!result.selectedMaturity) {
-    result.selectedMaturity = result.maturities[0] || '';
-  }
-
-  // --- Locate options table header ---
-  const lines = markdown.split('\n').map((l) => l.trim());
-  const headerLineIndex = lines.findIndex(
-    (l) => l.startsWith('|') && l.toLowerCase().includes('strike') && l.toLowerCase().includes('iv')
-  );
-  if (headerLineIndex === -1) {
-    return result;
-  }
-
-  const headerCells = splitMdRow(lines[headerLineIndex]);
-  const strikeIndex = findHeaderIndex(headerCells, ['strike', "prix d'exercice", 'exercice', 'prix d’exercice']);
-  if (strikeIndex === -1) {
-    return result;
-  }
-
-  const callRangeStart = 0;
-  const callRangeEnd = strikeIndex;
-  const putRangeStart = strikeIndex + 1;
-  const putRangeEnd = headerCells.length;
-
-  const idx = {
-    strike: strikeIndex,
-
-    callBidIv: findHeaderIndex(headerCells, ['bid iv'], callRangeStart, callRangeEnd),
-    callAskIv: findHeaderIndex(headerCells, ['ask iv'], callRangeStart, callRangeEnd),
-    callIv: findHeaderIndex(headerCells, ['iv'], callRangeStart, callRangeEnd),
-    callDelta: findHeaderIndex(headerCells, ['delta'], callRangeStart, callRangeEnd),
-    callGamma: findHeaderIndex(headerCells, ['gamma'], callRangeStart, callRangeEnd),
-    callTheta: findHeaderIndex(headerCells, ['theta'], callRangeStart, callRangeEnd),
-    callVega: findHeaderIndex(headerCells, ['vega'], callRangeStart, callRangeEnd),
-    callPrice: findHeaderIndex(headerCells, ['prix'], callRangeStart, callRangeEnd),
-    callBid: findHeaderIndex(headerCells, ['demande', 'bid'], callRangeStart, callRangeEnd),
-    callAsk: findHeaderIndex(headerCells, ['offre', 'ask'], callRangeStart, callRangeEnd),
-    callVol: findHeaderIndex(headerCells, ['volume', 'vol'], callRangeStart, callRangeEnd),
-
-    putIv: findHeaderIndex(headerCells, ['iv'], putRangeStart, putRangeEnd),
-    putDelta: findHeaderIndex(headerCells, ['delta'], putRangeStart, putRangeEnd),
-    putGamma: findHeaderIndex(headerCells, ['gamma'], putRangeStart, putRangeEnd),
-    putTheta: findHeaderIndex(headerCells, ['theta'], putRangeStart, putRangeEnd),
-    putVega: findHeaderIndex(headerCells, ['vega'], putRangeStart, putRangeEnd),
-    putPrice: findHeaderIndex(headerCells, ['prix'], putRangeStart, putRangeEnd),
-    putBid: findHeaderIndex(headerCells, ['demande', 'bid'], putRangeStart, putRangeEnd),
-    putAsk: findHeaderIndex(headerCells, ['offre', 'ask'], putRangeStart, putRangeEnd),
-    putVol: findHeaderIndex(headerCells, ['volume', 'vol'], putRangeStart, putRangeEnd),
-  };
-
-  // --- Parse rows after header (skip separator line "| --- |") ---
-  for (let i = headerLineIndex + 1; i < lines.length; i++) {
-    const l = lines[i];
-    if (!l.startsWith('|')) continue;
-    if (l.includes('---')) continue;
-
-    const cells = splitMdRow(l);
-    if (cells.length < headerCells.length) continue;
-
-    const strike = parseStrike(cells[idx.strike]);
-    if (!strike) continue;
-
-    // Calls (left side)
-    const callLast = safeCell(cells, idx.callPrice);
-    const callBid = safeCell(cells, idx.callBid);
-    const callAsk = safeCell(cells, idx.callAsk);
-    const callVol = normalizeDash(safeCell(cells, idx.callVol));
-
-    const callDelta = parseNum(safeCell(cells, idx.callDelta));
-    const callGamma = parseNum(safeCell(cells, idx.callGamma));
-    const callTheta = parseNum(safeCell(cells, idx.callTheta));
-    const callVega = parseNum(safeCell(cells, idx.callVega));
-
-    const callIv = computeIv(
-      safeCell(cells, idx.callBidIv),
-      safeCell(cells, idx.callAskIv),
-      safeCell(cells, idx.callIv)
-    );
-
-    const callHasAnyPrice = parseNum(callLast) > 0 || parseNum(callBid) > 0 || parseNum(callAsk) > 0;
-    if (callHasAnyPrice) {
-      result.calls.push({
-        strike,
-        type: 'Call',
-        symbol: '',
-        last: callLast || '0',
-        bid: callBid || '0',
-        ask: callAsk || '0',
-        volume: callVol || '0',
-        iv: callIv,
-        delta: callDelta,
-        gamma: callGamma,
-        theta: callTheta,
-        vega: callVega,
-      });
-    }
-
-    // Puts (right side)
-    const putLast = safeCell(cells, idx.putPrice);
-    const putBid = safeCell(cells, idx.putBid);
-    const putAsk = safeCell(cells, idx.putAsk);
-    const putVol = normalizeDash(safeCell(cells, idx.putVol));
-
-    const putDelta = parseNum(safeCell(cells, idx.putDelta));
-    const putGamma = parseNum(safeCell(cells, idx.putGamma));
-    const putTheta = parseNum(safeCell(cells, idx.putTheta));
-    const putVega = parseNum(safeCell(cells, idx.putVega));
-
-    const putIv = parseNum(safeCell(cells, idx.putIv));
-
-    const putHasAnyPrice = parseNum(putLast) > 0 || parseNum(putBid) > 0 || parseNum(putAsk) > 0;
-    if (putHasAnyPrice) {
-      result.puts.push({
-        strike,
-        type: 'Put',
-        symbol: '',
-        last: putLast || '0',
-        bid: putBid || '0',
-        ask: putAsk || '0',
-        volume: putVol || '0',
-        iv: putIv,
-        delta: putDelta,
-        gamma: putGamma,
-        theta: putTheta,
-        vega: putVega,
-      });
-    }
-  }
-
-  // Sort by strike
-  result.calls.sort((a, b) => a.strike - b.strike);
-  result.puts.sort((a, b) => a.strike - b.strike);
-
-  return result;
-}
-
-function splitMdRow(line: string): string[] {
-  return line
-    .split('|')
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
-}
-
-function normalizeHeaderCell(cell: string): string {
-  return cell
-    .toLowerCase()
-    .replace(/[\u00a0\u202f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/\./g, '')
-    .trim();
-}
-
-function findHeaderIndex(
-  headerCells: string[],
-  keywords: string[],
-  start = 0,
-  end = headerCells.length
-): number {
-  const ks = keywords.map((k) => k.toLowerCase());
-  for (let i = start; i < Math.min(end, headerCells.length); i++) {
-    const c = normalizeHeaderCell(headerCells[i]);
-    if (ks.some((k) => c.includes(k))) return i;
-  }
-  return -1;
-}
-
-function parseStrike(cell: string): number {
-  const digits = (cell || '').replace(/\D/g, '');
-  if (!digits) return 0;
-
-  // Many TV tables repeat the strike twice: "433433" or "43404340"
-  if (digits.length % 2 === 0) {
-    const half = digits.length / 2;
-    const a = digits.slice(0, half);
-    const b = digits.slice(half);
-    if (a === b) {
-      const n = parseInt(a, 10);
-      return Number.isFinite(n) ? n : 0;
-    }
-  }
-
-  const n = parseInt(digits, 10);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function safeCell(cells: string[], idx: number): string {
-  if (idx < 0) return '';
-  return (cells[idx] || '').trim();
-}
-
-function normalizeDash(v: string): string {
-  if (!v || v === '—' || v === '-' || v === '−') return '0';
-  return v;
-}
-
-function computeIv(bidIvRaw: string, askIvRaw: string, fallbackIvRaw: string): number {
-  const bidIv = parseNum(bidIvRaw);
-  const askIv = parseNum(askIvRaw);
-  if (bidIv > 0 && askIv > 0) return (bidIv + askIv) / 2;
-  const fb = parseNum(fallbackIvRaw);
-  return fb;
-}
-
-function parseNum(val: string): number {
-  const v = (val || '').trim();
-  if (!v || v === '—' || v === '-' || v === '' || v === '−') return 0;
-
-  // Normalize FR numbers and exotic minus sign
-  // Examples: "−1,95" -> -1.95, "1 234,56" -> 1234.56
-  const cleaned = v
-    .replace(/[\u00a0\u202f\s]/g, '')
-    .replace(/−/g, '-')
-    .replace(',', '.');
-
-  const num = parseFloat(cleaned);
-  return Number.isFinite(num) ? num : 0;
+  return bidIV || askIV || 0;
 }

@@ -92,24 +92,14 @@ export default function TradingView() {
   }, [symbol, toast]);
 
   // Load options data when symbol changes
-  const loadOptions = useCallback(async (maturity?: string) => {
+  const loadOptions = useCallback(async (strike?: number) => {
     if (!symbol) return;
 
     setIsLoadingOptions(true);
     setError(null);
     try {
-      const data = await fetchTVOptions(symbol, maturity);
+      const data = await fetchTVOptions(symbol, strike);
       setOptions(data);
-
-      // Ensure selected maturity stays valid for the current symbol
-      if (data?.maturities?.length) {
-        const next =
-          (maturity && data.maturities.includes(maturity) ? maturity : undefined) ||
-          (selectedMaturity && data.maturities.includes(selectedMaturity) ? selectedMaturity : undefined) ||
-          data.selectedMaturity ||
-          data.maturities[0];
-        if (next && next !== selectedMaturity) setSelectedMaturity(next);
-      }
 
       if (data && (data.calls.length > 0 || data.puts.length > 0)) {
         toast({
@@ -128,7 +118,7 @@ export default function TradingView() {
     } finally {
       setIsLoadingOptions(false);
     }
-  }, [symbol, toast, selectedMaturity]);
+  }, [symbol, toast]);
 
   // Load data when symbol changes
   useEffect(() => {
@@ -137,21 +127,15 @@ export default function TradingView() {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions(selectedMaturity || undefined);
+      loadOptions();
     }
   }, [symbol, activeTab, loadFutures, loadOptions]);
-
-  // Reload options when maturity changes
-  const handleMaturityChange = (maturity: string) => {
-    setSelectedMaturity(maturity);
-    loadOptions(maturity);
-  };
 
   const handleRefresh = () => {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions(selectedMaturity || undefined);
+      loadOptions();
     }
   };
 
