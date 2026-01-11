@@ -26,8 +26,8 @@ interface CacheEntry {
   error?: string;
 }
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const NEGATIVE_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<FuturesContract[] | null>>();

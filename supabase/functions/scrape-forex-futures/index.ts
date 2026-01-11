@@ -24,8 +24,8 @@ interface CacheEntry {
   data: FuturesContract[] | null;
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const NEGATIVE_CACHE_TTL_MS = 30 * 1000; // 30 seconds for errors
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes for errors
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<FuturesContract[]>>();

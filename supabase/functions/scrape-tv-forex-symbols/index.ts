@@ -17,7 +17,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const cache = new Map<string, CacheEntry>();
 
 function getFromCache(key: string): TVForexSymbol[] | null {
