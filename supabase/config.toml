@@ -1,4 +1,4 @@
-project_id = "eugvjubeuyukhgcwfncr"
+project_id = "iflnsckduohrcafafcpj"
 
 [functions.scrape-barchart-options]
 verify_jwt = false
@@ -37,4 +37,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.scrape-tv-forex-options]
+verify_jwt = false
+
+[functions.get-strikes]
 verify_jwt = false

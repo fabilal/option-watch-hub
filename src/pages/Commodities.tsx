@@ -11,16 +11,23 @@ import { EmptyState } from "@/components/EmptyState";
 
 import { RefreshCw, AlertCircle, TrendingUp, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
   fetchTVSymbols,
   fetchTVFutures,
   fetchTVOptions,
+  fetchTVOptionsByStrike,
+  fetchTVStrikes,
   type TVCategory,
   type TVSymbol,
   type TVFuturesContract,
   type TVOptionsChain,
+  type TVOptionsByStrike,
 } from "@/lib/tradingviewApi";
 
 export default function TradingView() {
@@ -35,7 +42,12 @@ export default function TradingView() {
   const [isLoadingFutures, setIsLoadingFutures] = useState(false);
 
   const [options, setOptions] = useState<TVOptionsChain | null>(null);
+  const [optionsByStrike, setOptionsByStrike] = useState<TVOptionsByStrike | null>(null);
   const [selectedMaturity, setSelectedMaturity] = useState<string | null>(null);
+  const [strike, setStrike] = useState<string>("");
+  const [availableStrikes, setAvailableStrikes] = useState<number[]>([]);
+  const [isLoadingStrikes, setIsLoadingStrikes] = useState(false);
+  const [viewMode, setViewMode] = useState<"strike" | "maturity">("strike"); // Default to strike
   const [isLoadingOptions, setIsLoadingOptions] = useState(false);
 
   const [activeTab, setActiveTab] = useState<"futures" | "options">("futures");
@@ -91,7 +103,38 @@ export default function TradingView() {
     }
   }, [symbol, toast]);
 
-  // Load options data when symbol changes
+  // Load options by strike (NEW - default mode)
+  const loadOptionsByStrike = useCallback(async (strikeValue: number) => {
+    if (!symbol) return;
+
+    setIsLoadingOptions(true);
+    setError(null);
+    try {
+      const data = await fetchTVOptionsByStrike(symbol, strikeValue);
+      setOptionsByStrike(data);
+      
+      if (data && data.maturities.length > 0) {
+        toast({
+          title: "Options chargées",
+          description: `${data.maturities.length} maturités pour le strike ${strikeValue}`,
+        });
+      } else {
+        setError('Aucune donnée trouvée pour ce strike.');
+      }
+    } catch (err) {
+      console.error('Failed to load options by strike:', err);
+      setError('Impossible de charger les options');
+      toast({
+        title: "Erreur",
+        description: "Impossible de charger les données options",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingOptions(false);
+    }
+  }, [symbol, toast]);
+
+  // Load options data when symbol changes (OLD mode)
   const loadOptions = useCallback(async (maturity?: string) => {
     if (!symbol) return;
 
@@ -130,6 +173,27 @@ export default function TradingView() {
     }
   }, [symbol, toast, selectedMaturity]);
 
+  // Load available strikes from DB when symbol changes
+  useEffect(() => {
+    if (!symbol || activeTab !== "options" || viewMode !== "strike") return;
+
+    const loadStrikes = async () => {
+      setIsLoadingStrikes(true);
+      try {
+        const strikes = await fetchTVStrikes(symbol.exchange, symbol.symbol);
+        setAvailableStrikes(strikes);
+        console.log(`Loaded ${strikes.length} strikes from DB for ${symbol.exchange}-${symbol.symbol}`);
+      } catch (err) {
+        console.error('Failed to load strikes:', err);
+        setAvailableStrikes([]);
+      } finally {
+        setIsLoadingStrikes(false);
+      }
+    };
+
+    loadStrikes();
+  }, [symbol, activeTab, viewMode]);
+
   // Load data when symbol changes
   useEffect(() => {
     if (!symbol) return;
@@ -137,9 +201,14 @@ export default function TradingView() {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions(selectedMaturity || undefined);
+      // Options tab: only auto-load for maturity mode
+      // Strike mode requires manual trigger (button or Enter key)
+      if (viewMode === "maturity") {
+        loadOptions(selectedMaturity || undefined);
+      }
+      // For strike mode, don't auto-load - user must click button or press Enter
     }
-  }, [symbol, activeTab, loadFutures, loadOptions]);
+  }, [symbol, activeTab, viewMode, selectedMaturity, loadFutures, loadOptions]);
 
   // Reload options when maturity changes
   const handleMaturityChange = (maturity: string) => {
@@ -151,7 +220,14 @@ export default function TradingView() {
     if (activeTab === "futures") {
       loadFutures();
     } else {
-      loadOptions(selectedMaturity || undefined);
+      if (viewMode === "strike" && strike) {
+        const strikeNum = parseFloat(strike);
+        if (!isNaN(strikeNum)) {
+          loadOptionsByStrike(strikeNum);
+        }
+      } else if (viewMode === "maturity") {
+        loadOptions(selectedMaturity || undefined);
+      }
     }
   };
 
@@ -185,14 +261,109 @@ export default function TradingView() {
               disabled={isLoadingSymbols}
             />
             
-            {/* Show maturity selector only for options tab */}
-            {activeTab === "options" && options && options.maturities.length > 0 && (
-              <TVMaturitySelector
-                maturities={options.maturities}
-                selected={selectedMaturity || options.maturities[0]}
-                onSelect={handleMaturityChange}
-                disabled={isLoadingOptions}
-              />
+            {/* Show strike/maturity controls for options tab */}
+            {activeTab === "options" && (
+              <div className="flex items-center gap-4">
+                {/* View Mode Toggle */}
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm text-muted-foreground">Mode:</Label>
+                  <RadioGroup
+                    value={viewMode}
+                    onValueChange={(v) => {
+                      setViewMode(v as "strike" | "maturity");
+                      setOptionsByStrike(null);
+                      setOptions(null);
+                    }}
+                    className="flex gap-4"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="strike" id="strike-mode" />
+                      <Label htmlFor="strike-mode" className="text-sm cursor-pointer">Par Strike</Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="maturity" id="maturity-mode" />
+                      <Label htmlFor="maturity-mode" className="text-sm cursor-pointer">Par Maturité</Label>
+                    </div>
+                  </RadioGroup>
+                </div>
+
+                {/* Strike Input (for strike mode) */}
+                {viewMode === "strike" && (
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="strike-select" className="text-sm text-muted-foreground">Strike:</Label>
+                    {/* Dropdown list of available strikes */}
+                    {availableStrikes.length > 0 && (
+                      <Select
+                        value={strike}
+                        onValueChange={(value) => {
+                          setStrike(value);
+                          if (value && symbol) {
+                            const strikeNum = parseFloat(value);
+                            if (!isNaN(strikeNum)) {
+                              loadOptionsByStrike(strikeNum);
+                            }
+                          }
+                        }}
+                        disabled={isLoadingOptions || isLoadingStrikes || !symbol}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue placeholder="Choisir un strike" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableStrikes.map((s) => (
+                            <SelectItem key={s} value={s.toString()}>
+                              {s}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {/* Manual input (always available) */}
+                    <Input
+                      id="strike-input"
+                      type="number"
+                      step="0.01"
+                      placeholder={availableStrikes.length > 0 ? "Ou saisir manuellement" : "Ex: 59.5"}
+                      value={strike}
+                      onChange={(e) => setStrike(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && strike && symbol) {
+                          const strikeNum = parseFloat(strike);
+                          if (!isNaN(strikeNum)) {
+                            loadOptionsByStrike(strikeNum);
+                          }
+                        }
+                      }}
+                      className="w-32"
+                      disabled={isLoadingOptions || !symbol}
+                    />
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        if (strike && symbol) {
+                          const strikeNum = parseFloat(strike);
+                          if (!isNaN(strikeNum)) {
+                            loadOptionsByStrike(strikeNum);
+                          }
+                        }
+                      }}
+                      disabled={isLoadingOptions || !symbol || !strike}
+                    >
+                      Charger
+                    </Button>
+                  </div>
+                )}
+
+                {/* Maturity Selector (for maturity mode) */}
+                {viewMode === "maturity" && options && options.maturities.length > 0 && (
+                  <TVMaturitySelector
+                    maturities={options.maturities}
+                    selected={selectedMaturity || options.maturities[0]}
+                    onSelect={handleMaturityChange}
+                    disabled={isLoadingOptions}
+                  />
+                )}
+              </div>
             )}
             
             <div className="flex items-center gap-2 ml-auto">
@@ -258,7 +429,89 @@ export default function TradingView() {
           <TabsContent value="options">
             {isLoadingOptions ? (
               <LoadingSkeleton />
-            ) : options && (options.calls.length > 0 || options.puts.length > 0) ? (
+            ) : viewMode === "strike" && optionsByStrike && optionsByStrike.maturities.length > 0 ? (
+              <div className="space-y-6 animate-fade-in">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold text-foreground">
+                      {symbol?.name}
+                      <span className="text-primary ml-2 font-mono text-lg">({symbol?.symbol})</span>
+                    </h2>
+                    <p className="text-muted-foreground">
+                      {symbol?.exchange} • Chaîne d'Options TradingView • Strike: {optionsByStrike.strike}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-2xl font-bold tabular-nums">{optionsByStrike.underlyingPrice || symbol?.symbol}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {optionsByStrike.maturities.length} maturités
+                    </p>
+                  </div>
+                </div>
+                {/* Options by Strike Table */}
+                <div className="rounded-lg border border-border bg-card">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="px-4 py-3 text-left text-sm font-semibold text-foreground">Maturité</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Last</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Bid/Ask</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call IV</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Delta</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Volume</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Last</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Bid/Ask</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put IV</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Delta</th>
+                          <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Volume</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {optionsByStrike.maturities.map((maturity, idx) => (
+                          <tr key={idx} className="border-b border-border/50 hover:bg-muted/50 transition-colors">
+                            <td className="px-4 py-3 text-sm font-mono text-foreground">
+                              <div>{maturity.maturityCode}</div>
+                              <div className="text-xs text-muted-foreground">{maturity.maturity}</div>
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.call?.last || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-muted-foreground">
+                              {maturity.call ? `${maturity.call.bid}/${maturity.call.ask}` : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.call?.iv ? `${maturity.call.iv.toFixed(2)}%` : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.call?.delta || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.call?.volume || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.put?.last || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-muted-foreground">
+                              {maturity.put ? `${maturity.put.bid}/${maturity.put.ask}` : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.put?.iv ? `${maturity.put.iv.toFixed(2)}%` : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.put?.delta || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                              {maturity.put?.volume || '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : viewMode === "maturity" && options && (options.calls.length > 0 || options.puts.length > 0) ? (
               <div className="space-y-6 animate-fade-in">
                 <div className="flex items-center justify-between">
                   <div>

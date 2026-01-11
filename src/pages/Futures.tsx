@@ -6,7 +6,6 @@ import { FuturesPricesTable } from "@/components/FuturesPricesTable";
 import { RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  COMMODITY_SYMBOLS,
   type CommodityCategory,
   type CommoditySymbol,
   type FuturesPricesData,
@@ -18,8 +17,8 @@ export default function Futures() {
   const { toast } = useToast();
 
   const [category, setCategory] = useState<CommodityCategory>("energies");
-  const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
-  const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
+  const [symbols, setSymbols] = useState<CommoditySymbol[]>([]);
+  const [symbol, setSymbol] = useState<CommoditySymbol | null>(null);
   const [futuresData, setFuturesData] = useState<FuturesPricesData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
@@ -37,11 +36,13 @@ export default function Futures() {
         }
       } catch (err) {
         console.error('Failed to load symbols:', err);
-        const staticSymbols = COMMODITY_SYMBOLS[category];
-        setSymbols(staticSymbols);
-        if (staticSymbols.length > 0) {
-          setSymbol(staticSymbols[0]);
-        }
+        setSymbols([]);
+        setSymbol(null);
+        toast({
+          title: "Erreur",
+          description: err instanceof Error ? err.message : "Impossible de charger les symboles",
+          variant: "destructive",
+        });
       } finally {
         setIsLoadingSymbols(false);
       }

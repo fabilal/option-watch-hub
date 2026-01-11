@@ -13,7 +13,6 @@ import { LoadingSkeleton } from "@/components/LoadingSkeleton";
 import { Download, RefreshCw, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  COMMODITY_SYMBOLS,
   generateMaturities,
   type CommodityCategory,
   type CommoditySymbol,
@@ -30,8 +29,8 @@ export default function Index() {
   const initialMaturities = useMemo(() => generateMaturities(), []);
 
   const [category, setCategory] = useState<CommodityCategory>("energies");
-  const [symbols, setSymbols] = useState<CommoditySymbol[]>(COMMODITY_SYMBOLS.energies);
-  const [symbol, setSymbol] = useState<CommoditySymbol | null>(COMMODITY_SYMBOLS.energies[0] || null);
+  const [symbols, setSymbols] = useState<CommoditySymbol[]>([]);
+  const [symbol, setSymbol] = useState<CommoditySymbol | null>(null);
 
   const [maturities, setMaturities] = useState<Maturity[]>(initialMaturities);
   const [maturity, setMaturity] = useState<Maturity | null>(initialMaturities.length > 0 ? initialMaturities[0] : null);
@@ -55,12 +54,13 @@ export default function Index() {
         }
       } catch (err) {
         console.error('Failed to load symbols:', err);
-        // Fall back to static symbols
-        const staticSymbols = COMMODITY_SYMBOLS[category];
-        setSymbols(staticSymbols);
-        if (staticSymbols.length > 0) {
-          setSymbol(staticSymbols[0]);
-        }
+        setSymbols([]);
+        setSymbol(null);
+        toast({
+          title: "Erreur",
+          description: err instanceof Error ? err.message : "Impossible de charger les symboles",
+          variant: "destructive",
+        });
       } finally {
         setIsLoadingSymbols(false);
       }
@@ -88,21 +88,23 @@ export default function Index() {
           return;
         }
 
-        // fallback
-        const fallback = generateMaturities();
-        setMaturities(fallback);
-        setMaturity(fallback.length > 0 ? fallback[0] : null);
-      } catch (err) {
-        console.error('Failed to load maturities:', err);
+        // No maturities found
+        setMaturities([]);
+        setMaturity(null);
         toast({
-          title: "Maturités indisponibles",
-          description: "Impossible de charger la liste complète depuis la source. Liste par défaut appliquée.",
+          title: "Aucune maturité trouvée",
+          description: "Aucune maturité disponible pour ce symbole.",
           variant: "destructive",
         });
-
-        const fallback = generateMaturities();
-        setMaturities(fallback);
-        setMaturity(fallback.length > 0 ? fallback[0] : null);
+      } catch (err) {
+        console.error('Failed to load maturities:', err);
+        setMaturities([]);
+        setMaturity(null);
+        toast({
+          title: "Erreur",
+          description: err instanceof Error ? err.message : "Impossible de charger les maturités depuis la source.",
+          variant: "destructive",
+        });
       } finally {
         setIsLoadingMaturities(false);
       }

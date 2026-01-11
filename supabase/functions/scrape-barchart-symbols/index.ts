@@ -1,5 +1,6 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getSymbolsFromDB, saveSymbolsToDB } from "../_shared/db-cache.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -30,7 +31,7 @@ serve(async (req) => {
   }
 
   try {
-    const { category } = await req.json();
+    const { category, forceRefresh } = await req.json();
 
     if (!category) {
       return new Response(
@@ -67,13 +68,40 @@ serve(async (req) => {
     console.log(`URL: ${url}`);
 
     const cacheKey = category.toLowerCase();
-    const cached = getFromCache(symbolsCache, cacheKey);
-    if (cached) {
-      console.log(`Cache hit for symbols: ${cacheKey}`);
-      return new Response(JSON.stringify(cached), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    
+    if (!forceRefresh) {
+      // 1. Check in-memory cache first (fastest)
+      const cached = getFromCache(symbolsCache, cacheKey);
+      if (cached) {
+        console.log(`[scrape-barchart-symbols] In-memory cache hit for symbols: ${cacheKey} (skipping DB save)`);
+        return new Response(JSON.stringify(cached), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // 2. Check DB cache (persistent)
+      const dbCached = await getSymbolsFromDB(cacheKey);
+      if (dbCached && dbCached.symbols.length > 0) {
+        console.log(`[scrape-barchart-symbols] DB cache hit for symbols: ${cacheKey} (${dbCached.symbols.length} symbols)`);
+        
+        // Also update in-memory cache for faster next access
+        symbolsCache.set(cacheKey, {
+          expiresAt: Date.now() + SYMBOLS_CACHE_TTL_MS,
+          data: dbCached,
+        });
+        
+        return new Response(JSON.stringify({
+          ...dbCached,
+          fromDBCache: true,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    } else {
+      console.log(`[scrape-barchart-symbols] forceRefresh=true, skipping cache for ${cacheKey}`);
     }
+    
+    console.log(`[scrape-barchart-symbols] No cache found (or forceRefresh), will scrape for ${cacheKey}...`);
 
     const existingPromise = symbolsInflight.get(cacheKey);
     const isOwner = !existingPromise;
@@ -119,13 +147,39 @@ serve(async (req) => {
         const markdown = scrapeData.data?.markdown || scrapeData.markdown || '';
         const symbols = parseSymbolsFromContent(markdown, category);
 
-        console.log(`Parsed ${symbols.length} symbols for ${category}`);
+        console.log(`[scrape-barchart-symbols] Parsed ${symbols.length} symbols for ${category}`);
+        if (symbols.length === 0) {
+          console.warn(`[scrape-barchart-symbols] WARNING: No symbols parsed for category ${category}! Markdown length: ${markdown.length}`);
+          console.log(`[scrape-barchart-symbols] Markdown preview (first 1000 chars):`, markdown.substring(0, 1000));
+        } else {
+          console.log(`[scrape-barchart-symbols] First 3 symbols:`, symbols.slice(0, 3).map(s => `${s.symbol} (${s.name})`).join(', '));
+        }
 
-        return {
+        const result = {
           success: true,
           category,
           symbols,
         };
+
+        // Save to DB cache for persistence (async, don't wait)
+        if (symbols.length > 0) {
+          console.log(`[scrape-barchart-symbols] Attempting to save ${symbols.length} symbols to DB for category: ${category}`);
+          saveSymbolsToDB(category, symbols, 7)
+            .then((success) => {
+              if (success) {
+                console.log(`[scrape-barchart-symbols] ✅ Successfully saved ${symbols.length} symbols to DB for category: ${category}`);
+              } else {
+                console.error(`[scrape-barchart-symbols] ❌ Failed to save symbols to DB for category: ${category} (saveSymbolsToDB returned false)`);
+              }
+            })
+            .catch((err) => {
+              console.error('[scrape-barchart-symbols] ❌ Error saving symbols to DB (non-blocking):', err);
+            });
+        } else {
+          console.warn(`[scrape-barchart-symbols] ⚠️ Skipping DB save: symbols.length is 0 for category: ${category}`);
+        }
+
+        return result;
       })();
 
     if (isOwner) {

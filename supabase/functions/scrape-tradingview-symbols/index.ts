@@ -1,5 +1,6 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getSymbolsFromDB, saveSymbolsToDB } from "../_shared/db-cache.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,10 +23,19 @@ interface CacheEntry {
 }
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const NEGATIVE_CACHE_TTL_MS = 60 * 1000; // 1 minute
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<TVSymbol[]>>();
 
-// Static fallback symbols for each category based on TradingView
+// Category URL mapping
+const CATEGORY_URLS: Record<TVCategory, string> = {
+  energy: 'https://fr.tradingview.com/markets/futures/quotes-energy/',
+  agriculture: 'https://fr.tradingview.com/markets/futures/quotes-agriculture/',
+  metals: 'https://fr.tradingview.com/markets/futures/quotes-metals/',
+};
+
+// Fallback symbols - used if scraping fails or returns empty
+// These will be saved to DB for future use
 const FALLBACK_SYMBOLS: Record<TVCategory, TVSymbol[]> = {
   energy: [
     { symbol: 'CL1!', name: 'Crude Oil WTI', exchange: 'NYMEX', type: 'futures' },
@@ -47,11 +57,11 @@ const FALLBACK_SYMBOLS: Record<TVCategory, TVSymbol[]> = {
     { symbol: 'ZO1!', name: 'Oats', exchange: 'CBOT', type: 'futures' },
     { symbol: 'ZR1!', name: 'Rough Rice', exchange: 'CBOT', type: 'futures' },
     { symbol: 'KE1!', name: 'KC HRW Wheat', exchange: 'CBOT', type: 'futures' },
-    { symbol: 'CT1!', name: 'Cotton', exchange: 'NYMEX', type: 'futures' },
-    { symbol: 'KC1!', name: 'Coffee', exchange: 'NYMEX', type: 'futures' },
-    { symbol: 'SB1!', name: 'Sugar', exchange: 'NYMEX', type: 'futures' },
-    { symbol: 'CC1!', name: 'Cocoa', exchange: 'NYMEX', type: 'futures' },
-    { symbol: 'OJ1!', name: 'Orange Juice', exchange: 'NYMEX', type: 'futures' },
+    { symbol: 'CT1!', name: 'Cotton', exchange: 'ICE', type: 'futures' },
+    { symbol: 'KC1!', name: 'Coffee', exchange: 'ICE', type: 'futures' },
+    { symbol: 'SB1!', name: 'Sugar', exchange: 'ICE', type: 'futures' },
+    { symbol: 'CC1!', name: 'Cocoa', exchange: 'ICE', type: 'futures' },
+    { symbol: 'OJ1!', name: 'Orange Juice', exchange: 'ICE', type: 'futures' },
     { symbol: 'LE1!', name: 'Live Cattle', exchange: 'CME', type: 'futures' },
     { symbol: 'HE1!', name: 'Lean Hogs', exchange: 'CME', type: 'futures' },
     { symbol: 'GF1!', name: 'Feeder Cattle', exchange: 'CME', type: 'futures' },
@@ -68,6 +78,11 @@ const FALLBACK_SYMBOLS: Record<TVCategory, TVSymbol[]> = {
     { symbol: 'ALI1!', name: 'Aluminum', exchange: 'COMEX', type: 'futures' },
   ],
 };
+
+// Helper to map category to DB storage key
+function getCategoryDBKey(category: TVCategory): string {
+  return `tradingview-${category}`;
+}
 
 function getFromCache(key: string): TVSymbol[] | null {
   const entry = cache.get(key);
@@ -102,19 +117,54 @@ serve(async (req) => {
       );
     }
 
-    // Check cache first
+    const apiKey = Deno.env.get('FIRECRAWL_API_KEY');
+    if (!apiKey) {
+      console.error('[scrape-tradingview-symbols] FIRECRAWL_API_KEY not configured');
+      return new Response(
+        JSON.stringify({ success: false, error: 'Firecrawl connector not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 1. Check in-memory cache first (fastest)
     const cached = getFromCache(validCategory);
     if (cached) {
-      console.log(`Cache hit for category: ${validCategory}`);
+      console.log(`[scrape-tradingview-symbols] In-memory cache hit for category: ${validCategory}`);
       return new Response(
         JSON.stringify({ success: true, data: cached }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    // 2. Check DB cache (persistent)
+    const dbKey = getCategoryDBKey(validCategory);
+    const dbCached = await getSymbolsFromDB(dbKey);
+    if (dbCached && dbCached.symbols.length > 0) {
+      console.log(`[scrape-tradingview-symbols] DB cache hit for ${validCategory}: ${dbCached.symbols.length} symbols`);
+      
+      // Convert DB format to TVSymbol format
+      const symbols: TVSymbol[] = dbCached.symbols.map(s => ({
+        symbol: s.symbol,
+        name: s.name,
+        exchange: s.latest || '', // Using 'latest' field for exchange
+        type: 'futures'
+      }));
+      
+      // Also update in-memory cache
+      cache.set(validCategory, {
+        expiresAt: Date.now() + CACHE_TTL_MS,
+        data: symbols,
+      });
+      
+      return new Response(
+        JSON.stringify({ success: true, data: symbols, fromDBCache: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Check inflight
     if (inflight.has(validCategory)) {
-      console.log(`Waiting for inflight request: ${validCategory}`);
+      console.log(`[scrape-tradingview-symbols] Waiting for inflight request: ${validCategory}`);
       const result = await inflight.get(validCategory);
       return new Response(
         JSON.stringify({ success: true, data: result }),
@@ -122,15 +172,159 @@ serve(async (req) => {
       );
     }
 
-    // For TradingView, we use static symbols since scraping their symbol list is complex
-    // The symbols are well-known and stable
-    console.log(`Using static symbols for category: ${validCategory}`);
-    
-    const symbols = FALLBACK_SYMBOLS[validCategory];
-    cache.set(validCategory, {
-      expiresAt: Date.now() + CACHE_TTL_MS,
-      data: symbols,
-    });
+    console.log(`[scrape-tradingview-symbols] No cache found, will scrape for ${validCategory}...`);
+
+    // 3. Scrape from TradingView
+    const url = CATEGORY_URLS[validCategory];
+    console.log(`[scrape-tradingview-symbols] Scraping TradingView symbols from: ${url}`);
+
+    const scrapePromise = (async (): Promise<TVSymbol[]> => {
+      try {
+        const schema = {
+          type: 'object',
+          properties: {
+            symbols: {
+              type: 'array',
+              description: 'ALL commodity symbols from the main futures table',
+              items: {
+                type: 'object',
+                properties: {
+                  symbol: { type: 'string', description: 'Symbol code like CL1!, BZ1!, NG1!, etc.' },
+                  name: { type: 'string', description: 'Full name like Crude Oil WTI, Brent Crude Oil, Natural Gas' },
+                  exchange: { type: 'string', description: 'Exchange like NYMEX, COMEX, CME, CBOT' },
+                },
+                required: ['symbol', 'name'],
+              },
+            },
+          },
+          required: ['symbols'],
+        };
+
+        const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            url,
+            formats: ['extract'],
+            extract: {
+              schema,
+              prompt: `Extract ALL commodity futures symbols from the main table on this page for category: ${validCategory}.
+Each row typically contains: Symbol (like CL1!, BZ1!, NG1!), Name (like Crude Oil WTI, Brent Crude Oil), Exchange (NYMEX, COMEX, etc.).
+Extract EVERY symbol visible in the table. Do not skip any rows.
+Include all variations (standard, mini, micro versions).`,
+            },
+            onlyMainContent: true,
+            waitFor: 5000,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          console.error(`[scrape-tradingview-symbols] Firecrawl error for ${validCategory}:`, data);
+          return [];
+        }
+
+        const extractData = data.data?.extract || data.extract || {};
+        const symbolsData = extractData.symbols || [];
+        
+        console.log(`[scrape-tradingview-symbols] Extracted ${symbolsData.length} symbols for ${validCategory}`);
+        
+        if (symbolsData.length === 0) {
+          console.warn(`[scrape-tradingview-symbols] ⚠️ No symbols extracted for ${validCategory}!`);
+          return [];
+        }
+
+        let symbols: TVSymbol[] = symbolsData.map((s: any) => ({
+          symbol: s.symbol || '',
+          name: s.name || '',
+          exchange: s.exchange || 'NYMEX',
+          type: 'futures'
+        })).filter((s: TVSymbol) => s.symbol && s.name);
+
+        console.log(`[scrape-tradingview-symbols] ✅ Parsed ${symbols.length} valid symbols for ${validCategory}`);
+        
+        // If scraping failed or returned 0 symbols, use fallback
+        if (symbols.length === 0) {
+          console.warn(`[scrape-tradingview-symbols] ⚠️ Scraping returned 0 symbols for ${validCategory}, using fallback symbols`);
+          symbols = FALLBACK_SYMBOLS[validCategory];
+          console.log(`[scrape-tradingview-symbols] Using ${symbols.length} fallback symbols for ${validCategory}`);
+        } else {
+          console.log(`[scrape-tradingview-symbols] Sample symbols:`, symbols.slice(0, 5).map(s => `${s.symbol} (${s.name})`).join(', '));
+        }
+
+        // Save to DB cache (async, non-blocking) - always save, whether scraped or fallback
+        if (symbols.length > 0) {
+          console.log(`[scrape-tradingview-symbols] Saving ${symbols.length} symbols to DB for ${validCategory}`);
+          
+          // Convert to DB format (using 'latest' field for exchange to fit the schema)
+          const dbSymbols = symbols.map(s => ({
+            symbol: s.symbol,
+            name: s.name,
+            latest: s.exchange, // Store exchange in 'latest' field
+            change: '',
+            volume: ''
+          }));
+          
+          saveSymbolsToDB(dbKey, dbSymbols, 7)
+            .then((success) => {
+              if (success) {
+                console.log(`[scrape-tradingview-symbols] ✅ Successfully saved ${symbols.length} symbols to DB`);
+              } else {
+                console.error(`[scrape-tradingview-symbols] ❌ Failed to save symbols to DB`);
+              }
+            })
+            .catch((err) => {
+              console.error('[scrape-tradingview-symbols] ❌ Error saving symbols to DB (non-blocking):', err);
+            });
+        }
+
+        // Update in-memory cache
+        cache.set(validCategory, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          data: symbols,
+        });
+
+        return symbols;
+      } catch (err) {
+        console.error(`[scrape-tradingview-symbols] ❌ Scrape error for ${validCategory}:`, err);
+        console.warn(`[scrape-tradingview-symbols] ⚠️ Using fallback symbols due to error`);
+        
+        // Use fallback symbols
+        const fallbackSymbols = FALLBACK_SYMBOLS[validCategory];
+        
+        // Save fallback to DB so it's available next time
+        if (fallbackSymbols.length > 0) {
+          const dbSymbols = fallbackSymbols.map(s => ({
+            symbol: s.symbol,
+            name: s.name,
+            latest: s.exchange,
+            change: '',
+            volume: ''
+          }));
+          
+          saveSymbolsToDB(dbKey, dbSymbols, 7).catch((err) => {
+            console.error('[scrape-tradingview-symbols] ❌ Error saving fallback symbols to DB:', err);
+          });
+        }
+        
+        // Update in-memory cache
+        cache.set(validCategory, {
+          expiresAt: Date.now() + CACHE_TTL_MS,
+          data: fallbackSymbols,
+        });
+        
+        return fallbackSymbols;
+      } finally {
+        inflight.delete(validCategory);
+      }
+    })();
+
+    inflight.set(validCategory, scrapePromise);
+    const symbols = await scrapePromise;
 
     return new Response(
       JSON.stringify({ success: true, data: symbols }),

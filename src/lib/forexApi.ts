@@ -83,17 +83,18 @@ export async function fetchForexSymbols(category: ForexCategory): Promise<ForexS
 
       if (error) {
         console.error('Error fetching Forex symbols:', error);
-        return getDefaultSymbols(category);
+        throw new Error(error.message || 'Failed to fetch Forex symbols');
       }
 
       if (data?.success && data?.data) {
         return data.data as ForexSymbol[];
       }
 
-      return getDefaultSymbols(category);
+      console.warn('No Forex symbols returned from scraping');
+      return [];
     } catch (err) {
       console.error('Failed to fetch Forex symbols:', err);
-      return getDefaultSymbols(category);
+      throw err;
     } finally {
       symbolsInflight.delete(cacheKey);
     }
@@ -196,30 +197,4 @@ export function extractMaturitiesFromFutures(futures: ForexFuturesContract[]): s
       return match ? match[0] : null;
     })
     .filter((m): m is string => m !== null);
-}
-
-// Default symbols fallback
-function getDefaultSymbols(category: ForexCategory): ForexSymbol[] {
-  const defaults: Record<ForexCategory, ForexSymbol[]> = {
-    majors: [
-      { symbol: 'E6', name: 'Euro FX', exchange: 'CME', type: 'futures' },
-      { symbol: 'B6', name: 'British Pound', exchange: 'CME', type: 'futures' },
-      { symbol: 'J6', name: 'Japanese Yen', exchange: 'CME', type: 'futures' },
-      { symbol: 'D6', name: 'Canadian Dollar', exchange: 'CME', type: 'futures' },
-      { symbol: 'A6', name: 'Australian Dollar', exchange: 'CME', type: 'futures' },
-      { symbol: 'S6', name: 'Swiss Franc', exchange: 'CME', type: 'futures' },
-    ],
-    minors: [
-      { symbol: 'N6', name: 'New Zealand Dollar', exchange: 'CME', type: 'futures' },
-      { symbol: 'M6', name: 'Mexican Peso', exchange: 'CME', type: 'futures' },
-      { symbol: 'L6', name: 'Brazilian Real', exchange: 'CME', type: 'futures' },
-      { symbol: 'RA', name: 'South African Rand', exchange: 'CME', type: 'futures' },
-    ],
-    exotics: [
-      { symbol: 'DX', name: 'US Dollar Index', exchange: 'ICE', type: 'futures' },
-      { symbol: 'BTC', name: 'Bitcoin Futures', exchange: 'CME', type: 'crypto' },
-      { symbol: 'ETH', name: 'Ether Futures', exchange: 'CME', type: 'crypto' },
-    ],
-  };
-  return defaults[category];
 }

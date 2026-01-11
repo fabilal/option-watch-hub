@@ -5,7 +5,11 @@ import { EmptyState } from "@/components/EmptyState";
 
 import { RefreshCw, AlertCircle, DollarSign, BarChart3, TrendingUp, LineChart } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import {
   fetchForexSymbols,
@@ -22,10 +26,13 @@ import {
   fetchTVForexSymbols,
   fetchTVForexFutures,
   fetchTVForexOptions,
+  fetchTVForexOptionsByStrike,
   fetchTVForexOptionsMaturities,
+  fetchTVForexStrikes,
   type TVForexSymbol,
   type TVForexFutures,
   type TVForexOptionsChain,
+  type TVForexOptionsByStrike,
 } from "@/lib/tvForexApi";
 import { ForexCategorySelector } from "@/components/forex/ForexCategorySelector";
 import { ForexSymbolSelector } from "@/components/forex/ForexSymbolSelector";
@@ -68,8 +75,13 @@ export default function Forex() {
   const [tvSymbol, setTVSymbol] = useState<TVForexSymbol | null>(null);
   const [tvFutures, setTVFutures] = useState<TVForexFutures[]>([]);
   const [tvOptions, setTVOptions] = useState<TVForexOptionsChain | null>(null);
+  const [tvOptionsByStrike, setTVOptionsByStrike] = useState<TVForexOptionsByStrike | null>(null);
   const [tvMaturities, setTVMaturities] = useState<string[]>([]);
   const [tvSelectedMaturity, setTVSelectedMaturity] = useState<string | null>(null);
+  const [tvStrike, setTVStrike] = useState<string>("");
+  const [tvAvailableStrikes, setTVAvailableStrikes] = useState<number[]>([]);
+  const [isLoadingTVStrikes, setIsLoadingTVStrikes] = useState(false);
+  const [tvViewMode, setTVViewMode] = useState<"strike" | "maturity">("strike"); // Default to strike
   const [isLoadingTVSymbols, setIsLoadingTVSymbols] = useState(false);
   const [isLoadingTVFutures, setIsLoadingTVFutures] = useState(false);
   const [isLoadingTVOptions, setIsLoadingTVOptions] = useState(false);
@@ -141,6 +153,13 @@ export default function Forex() {
           title: "Données TradingView chargées",
           description: `${data.length} contrats futures pour ${tvSymbol.name}`,
         });
+      } else {
+        setTVError('Aucune donnée futures disponible pour ce symbole');
+        toast({
+          title: "Aucune donnée",
+          description: `Aucun contrat future trouvé pour ${tvSymbol.name}`,
+          variant: "destructive",
+        });
       }
     } catch (err) {
       console.error('Failed to load TV futures:', err);
@@ -177,7 +196,38 @@ export default function Forex() {
     }
   }, [tvSymbol, tvSelectedMaturity]);
 
-  // Load TradingView options when symbol or maturity changes
+  // Load TradingView options by strike (NEW - default mode)
+  const loadTVOptionsByStrike = useCallback(async (strike: number) => {
+    if (!tvSymbol) return;
+
+    setIsLoadingTVOptions(true);
+    setTVError(null);
+    try {
+      const data = await fetchTVForexOptionsByStrike(tvSymbol, strike);
+      setTVOptionsByStrike(data);
+      
+      if (data && data.maturities.length > 0) {
+        toast({
+          title: "Options TradingView chargées",
+          description: `${data.maturities.length} maturités pour le strike ${strike} de ${tvSymbol.name}`,
+        });
+      } else {
+        setTVError('Aucune donnée trouvée pour ce strike.');
+      }
+    } catch (err) {
+      console.error('Failed to load TV options by strike:', err);
+      setTVError('Impossible de charger les options TradingView');
+      toast({
+        title: "Erreur",
+        description: "Impossible de charger les options TradingView",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingTVOptions(false);
+    }
+  }, [tvSymbol, toast]);
+
+  // Load TradingView options when symbol or maturity changes (OLD mode)
   const loadTVOptions = useCallback(async (maturity?: string) => {
     if (!tvSymbol) return;
 
@@ -206,18 +256,44 @@ export default function Forex() {
     }
   }, [tvSymbol, toast]);
 
+  // Load available strikes from DB when TV symbol changes
+  useEffect(() => {
+    if (dataSource === "tradingview" && tvSymbol && tvActiveTab === "options" && tvViewMode === "strike") {
+      const loadStrikes = async () => {
+        setIsLoadingTVStrikes(true);
+        try {
+          const strikes = await fetchTVForexStrikes(tvSymbol.exchange, tvSymbol.symbol);
+          setTVAvailableStrikes(strikes);
+          console.log(`Loaded ${strikes.length} strikes from DB for ${tvSymbol.exchange}-${tvSymbol.symbol}`);
+        } catch (err) {
+          console.error('Failed to load strikes:', err);
+          setTVAvailableStrikes([]);
+        } finally {
+          setIsLoadingTVStrikes(false);
+        }
+      };
+
+      loadStrikes();
+    }
+  }, [dataSource, tvSymbol, tvActiveTab, tvViewMode]);
+
   // Load data when TV symbol or tab changes
   useEffect(() => {
     if (dataSource === "tradingview" && tvSymbol) {
       if (tvActiveTab === "futures") {
         loadTVFutures();
       } else {
-        // Load maturities first, then options
-        loadTVMaturities();
-        loadTVOptions(tvSelectedMaturity || undefined);
+        // Options tab: only auto-load for maturity mode
+        // Strike mode requires manual trigger (button or Enter key)
+        if (tvViewMode === "maturity") {
+          // Load maturities first, then options
+          loadTVMaturities();
+          loadTVOptions(tvSelectedMaturity || undefined);
+        }
+        // For strike mode, don't auto-load - user must click button or press Enter
       }
     }
-  }, [dataSource, tvSymbol, tvActiveTab, loadTVFutures, loadTVMaturities, loadTVOptions, tvSelectedMaturity]);
+  }, [dataSource, tvSymbol, tvActiveTab, tvViewMode, tvSelectedMaturity, loadTVFutures, loadTVMaturities, loadTVOptions]);
 
   // Handle TV maturity change
   const handleTVMaturityChange = (maturity: string) => {
@@ -380,15 +456,110 @@ export default function Forex() {
                 disabled={isLoadingTVSymbols}
               />
               
-              {/* Show maturity selector for options tab */}
+              {/* Show strike/maturity controls for options tab */}
               {tvActiveTab === "options" && (
-                <TVForexMaturitySelector
-                  maturities={tvMaturities}
-                  selected={tvSelectedMaturity}
-                  onSelect={handleTVMaturityChange}
-                  disabled={isLoadingTVOptions}
-                  isLoading={isLoadingTVMaturities}
-                />
+                <div className="flex items-center gap-4">
+                  {/* View Mode Toggle */}
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm text-muted-foreground">Mode:</Label>
+                    <RadioGroup
+                      value={tvViewMode}
+                      onValueChange={(v) => {
+                        setTVViewMode(v as "strike" | "maturity");
+                        setTVOptionsByStrike(null);
+                        setTVOptions(null);
+                      }}
+                      className="flex gap-4"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="strike" id="strike-mode" />
+                        <Label htmlFor="strike-mode" className="text-sm cursor-pointer">Par Strike</Label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <RadioGroupItem value="maturity" id="maturity-mode" />
+                        <Label htmlFor="maturity-mode" className="text-sm cursor-pointer">Par Maturité</Label>
+                      </div>
+                    </RadioGroup>
+                  </div>
+
+                  {/* Strike Input (for strike mode) */}
+                  {tvViewMode === "strike" && (
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="strike-select" className="text-sm text-muted-foreground">Strike:</Label>
+                      {/* Dropdown list of available strikes */}
+                      {tvAvailableStrikes.length > 0 && (
+                        <Select
+                          value={tvStrike}
+                          onValueChange={(value) => {
+                            setTVStrike(value);
+                            if (value && tvSymbol) {
+                              const strikeNum = parseFloat(value);
+                              if (!isNaN(strikeNum)) {
+                                loadTVOptionsByStrike(strikeNum);
+                              }
+                            }
+                          }}
+                          disabled={isLoadingTVOptions || isLoadingTVStrikes || !tvSymbol}
+                        >
+                          <SelectTrigger className="w-32">
+                            <SelectValue placeholder="Choisir un strike" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {tvAvailableStrikes.map((s) => (
+                              <SelectItem key={s} value={s.toString()}>
+                                {s}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {/* Manual input (always available) */}
+                      <Input
+                        id="strike-input"
+                        type="number"
+                        step="0.01"
+                        placeholder={tvAvailableStrikes.length > 0 ? "Ou saisir manuellement" : "Ex: 1.05"}
+                        value={tvStrike}
+                        onChange={(e) => setTVStrike(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && tvStrike && tvSymbol) {
+                            const strikeNum = parseFloat(tvStrike);
+                            if (!isNaN(strikeNum)) {
+                              loadTVOptionsByStrike(strikeNum);
+                            }
+                          }
+                        }}
+                        className="w-32"
+                        disabled={isLoadingTVOptions || !tvSymbol}
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          if (tvStrike && tvSymbol) {
+                            const strikeNum = parseFloat(tvStrike);
+                            if (!isNaN(strikeNum)) {
+                              loadTVOptionsByStrike(strikeNum);
+                            }
+                          }
+                        }}
+                        disabled={isLoadingTVOptions || !tvSymbol || !tvStrike}
+                      >
+                        Charger
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Maturity Selector (for maturity mode) */}
+                  {tvViewMode === "maturity" && (
+                    <TVForexMaturitySelector
+                      maturities={tvMaturities}
+                      selected={tvSelectedMaturity}
+                      onSelect={handleTVMaturityChange}
+                      disabled={isLoadingTVOptions}
+                      isLoading={isLoadingTVMaturities}
+                    />
+                  )}
+                </div>
               )}
               
               <div className="flex items-center gap-2 ml-auto">
@@ -465,7 +636,89 @@ export default function Forex() {
               <TabsContent value="options">
                 {isLoadingTVOptions ? (
                   <LoadingSkeleton />
-                ) : tvOptions && (tvOptions.calls.length > 0 || tvOptions.puts.length > 0) ? (
+                ) : tvViewMode === "strike" && tvOptionsByStrike && tvOptionsByStrike.maturities.length > 0 ? (
+                  <div className="space-y-6 animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="text-xl font-semibold text-foreground">
+                          {tvSymbol?.name}
+                          <span className="text-primary ml-2 font-mono text-lg">({tvSymbol?.symbol})</span>
+                        </h2>
+                        <p className="text-muted-foreground">
+                          {tvSymbol?.exchange} • Options Chain TradingView • Strike: {tvOptionsByStrike.strike}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold tabular-nums">{tvOptionsByStrike.underlyingPrice || tvSymbol?.price}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {tvOptionsByStrike.maturities.length} maturités
+                        </p>
+                      </div>
+                    </div>
+                    {/* Options by Strike Table */}
+                    <div className="rounded-lg border border-border bg-card">
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b border-border">
+                              <th className="px-4 py-3 text-left text-sm font-semibold text-foreground">Maturité</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Last</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Bid/Ask</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call IV</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Delta</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Call Volume</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Last</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Bid/Ask</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put IV</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Delta</th>
+                              <th className="px-4 py-3 text-center text-sm font-semibold text-foreground">Put Volume</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tvOptionsByStrike.maturities.map((maturity, idx) => (
+                              <tr key={idx} className="border-b border-border/50 hover:bg-muted/50 transition-colors">
+                                <td className="px-4 py-3 text-sm font-mono text-foreground">
+                                  <div>{maturity.maturityCode}</div>
+                                  <div className="text-xs text-muted-foreground">{maturity.maturity}</div>
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.call?.last || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-muted-foreground">
+                                  {maturity.call ? `${maturity.call.bid}/${maturity.call.ask}` : '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.call?.iv ? `${maturity.call.iv.toFixed(2)}%` : '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.call?.delta || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.call?.volume || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.put?.last || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-muted-foreground">
+                                  {maturity.put ? `${maturity.put.bid}/${maturity.put.ask}` : '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.put?.iv ? `${maturity.put.iv.toFixed(2)}%` : '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.put?.delta || '-'}
+                                </td>
+                                <td className="px-4 py-3 text-center text-sm font-mono text-foreground">
+                                  {maturity.put?.volume || '-'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : tvViewMode === "maturity" && tvOptions && (tvOptions.calls.length > 0 || tvOptions.puts.length > 0) ? (
                   <div className="space-y-6 animate-fade-in">
                     <div className="flex items-center justify-between">
                       <div>

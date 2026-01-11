@@ -6,7 +6,6 @@ import {
   type OptionData,
   type FuturesPrice,
   type FuturesPricesData,
-  COMMODITY_SYMBOLS,
 } from './commodityData';
 
 interface ScrapeOptionsResponse {
@@ -186,26 +185,24 @@ export async function fetchCategorySymbols(category: string): Promise<CommodityS
 
       if (error) {
         console.error('Supabase function error:', error);
-        // Fall back to static symbols
-        return COMMODITY_SYMBOLS[category as keyof typeof COMMODITY_SYMBOLS] || [];
+        throw new Error(error.message || 'Failed to fetch symbols');
       }
 
       const response = data as ScrapeSymbolsResponse;
 
       if (!response.success) {
         if (response.code === 'RATE_LIMIT') {
-          console.warn(`Rate limited while fetching symbols for ${category}; using fallback list.`);
-          return COMMODITY_SYMBOLS[category as keyof typeof COMMODITY_SYMBOLS] || [];
+          const retry = response.retryAfterSeconds ?? 30;
+          throw new Error(`Limite de requêtes atteinte. Réessaie dans ~${retry}s.`);
         }
 
         console.error('Scrape failed:', response.error);
-        // Fall back to static symbols
-        return COMMODITY_SYMBOLS[category as keyof typeof COMMODITY_SYMBOLS] || [];
+        throw new Error(response.error || 'Failed to scrape symbols');
       }
 
       if (response.symbols.length === 0) {
-        // Fall back to static symbols if scraping returned nothing
-        return COMMODITY_SYMBOLS[category as keyof typeof COMMODITY_SYMBOLS] || [];
+        console.warn('No symbols returned from scraping');
+        return [];
       }
 
       // Map to CommoditySymbol format with exchange info
@@ -217,8 +214,7 @@ export async function fetchCategorySymbols(category: string): Promise<CommodityS
       }));
     } catch (error) {
       console.error('Error fetching category symbols:', error);
-      // Fall back to static symbols
-      return COMMODITY_SYMBOLS[category as keyof typeof COMMODITY_SYMBOLS] || [];
+      throw error;
     }
   })();
 

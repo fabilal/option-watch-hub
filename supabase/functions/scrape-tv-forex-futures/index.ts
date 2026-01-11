@@ -1,3 +1,6 @@
+import "https://deno.land/x/xhr@0.1.0/mod.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -34,7 +37,7 @@ function getFromCache(key: string): TVForexFutures[] | null | undefined {
   return undefined;
 }
 
-Deno.serve(async (req) => {
+serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
@@ -84,6 +87,32 @@ Deno.serve(async (req) => {
       const url = `https://fr.tradingview.com/symbols/${exchangeCode}-${symbol}/contracts/`;
       console.log('Scraping TV forex futures from:', url);
 
+      const schema = {
+        type: 'object',
+        properties: {
+          contracts: {
+            type: 'array',
+            description: 'ALL futures contracts from the contracts table',
+            items: {
+              type: 'object',
+              properties: {
+                symbol: { type: 'string', description: 'Contract symbol like 6EF2026, 6CH2026' },
+                name: { type: 'string', description: 'Contract name like Euro FX Futures (Jan 2026)' },
+                expiration: { type: 'string', description: 'Expiration date like 2026-01-16' },
+                price: { type: 'string', description: 'Last price' },
+                changePercent: { type: 'string', description: 'Percent change with % sign' },
+                change: { type: 'string', description: 'Price change' },
+                high: { type: 'string', description: 'High price' },
+                low: { type: 'string', description: 'Low price' },
+                rating: { type: 'string', description: 'Rating like Sell, Buy, Neutral' },
+              },
+              required: ['symbol', 'price'],
+            },
+          },
+        },
+        required: ['contracts'],
+      };
+
       const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
         method: 'POST',
         headers: {
@@ -92,9 +121,15 @@ Deno.serve(async (req) => {
         },
         body: JSON.stringify({
           url,
-          formats: ['markdown'],
+          formats: ['extract'],
+          extract: {
+            schema,
+            prompt: `Extract ALL futures contracts from the contracts table for ${symbol}.
+Each row contains: contract symbol (like 6EF2026), name, expiration date, price, change %, change, high, low, and rating.
+Extract EVERY contract shown in the table.`,
+          },
           onlyMainContent: true,
-          waitFor: 3000,
+          waitFor: 5000,
         }),
       });
 
@@ -105,9 +140,25 @@ Deno.serve(async (req) => {
         throw new Error(result.error || 'Failed to scrape');
       }
 
-      const markdown = result.data?.markdown || '';
-      const baseSymbol = symbol.replace(/1!$/, '');
-      return parseFuturesFromMarkdown(markdown, baseSymbol);
+      const extractData = result.data?.extract || result.extract || {};
+      const rawContracts = extractData.contracts || [];
+      
+      console.log(`Extracted ${rawContracts.length} contracts from extract`);
+      
+      // Map to our interface
+      const futures: TVForexFutures[] = rawContracts.map((c: any) => ({
+        symbol: c.symbol || '',
+        name: c.name || c.symbol || '',
+        expiration: c.expiration || '',
+        price: c.price || '0',
+        change: c.change || '0',
+        changePercent: c.changePercent || '0%',
+        high: c.high || '',
+        low: c.low || '',
+        rating: c.rating || '',
+      })).filter((f: TVForexFutures) => f.symbol && f.price);
+
+      return futures;
     })();
 
     inflight.set(cacheKey, fetchPromise);
@@ -138,70 +189,4 @@ Deno.serve(async (req) => {
   }
 });
 
-function parseFuturesFromMarkdown(markdown: string, baseSymbol: string): TVForexFutures[] {
-  const futures: TVForexFutures[] = [];
-  const lines = markdown.split('\n');
-
-  // Pattern: | ![...][ 6EF2026 ](https://...) [Euro FX Futures (Jan 2026)](...) | 2026-01-16 | 1,16900 | −0,06% | −0,00070 | 1,17085 | 1,16830 | Sell |
-  const symbolRegex = new RegExp(`\\[(${baseSymbol}[A-Z]\\d{4})\\]\\(https://`, 'i');
-
-  for (const line of lines) {
-    if (!line.startsWith('|') || line.includes('Symbole') || line.includes('---')) continue;
-
-    const symbolMatch = line.match(symbolRegex);
-    if (!symbolMatch) continue;
-
-    const contractSymbol = symbolMatch[1];
-    
-    // Extract name like "Euro FX Futures (Jan 2026)"
-    const nameMatch = line.match(/\[([^\]]+\(\w+\s+\d{4}\))\]/);
-    const name = nameMatch ? nameMatch[1] : contractSymbol;
-
-    // Split by | and extract columns
-    // Columns: Symbol | Expiration | Price | Change % | Change | High | Low | Rating
-    const cols = line.split('|').map(c => c.trim()).filter(Boolean);
-    if (cols.length < 7) continue;
-
-    // Find expiration date (format: 2026-01-16)
-    const expirationMatch = cols[1]?.match(/(\d{4}-\d{2}-\d{2})/);
-    const expiration = expirationMatch ? expirationMatch[1] : '';
-
-    // Price in column 3 (index 2)
-    const priceRaw = cols[2] || '';
-    const priceMatch = priceRaw.match(/[\d.,]+/);
-    const price = priceMatch ? priceMatch[0].replace(',', '.') : '0';
-
-    // Change % in column 4 (index 3)
-    const changePercent = (cols[3] || '').replace(',', '.').trim();
-
-    // Change in column 5 (index 4)
-    const change = (cols[4] || '').replace(',', '.').trim();
-
-    // High in column 6 (index 5)
-    const highRaw = cols[5] || '';
-    const highMatch = highRaw.match(/[\d.,]+/);
-    const high = highMatch ? highMatch[0].replace(',', '.') : '';
-
-    // Low in column 7 (index 6)
-    const lowRaw = cols[6] || '';
-    const lowMatch = lowRaw.match(/[\d.,]+/);
-    const low = lowMatch ? lowMatch[0].replace(',', '.') : '';
-
-    // Rating in last column
-    const rating = cols[7] || '';
-
-    futures.push({
-      symbol: contractSymbol,
-      name,
-      expiration,
-      price,
-      change,
-      changePercent,
-      high,
-      low,
-      rating,
-    });
-  }
-
-  return futures;
-}
+// Function removed - now using extract format instead of markdown parsing

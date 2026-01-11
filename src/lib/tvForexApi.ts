@@ -47,26 +47,46 @@ export interface TVForexOptionsChain {
   puts: TVForexOptionContract[];
 }
 
+// New interface for strike-based view (all maturities for a strike)
+export interface TVForexOptionsByStrike {
+  underlyingSymbol: string;
+  underlyingPrice: string;
+  strike: number;
+  maturities: Array<{
+    maturity: string; // Expiration date
+    maturityCode: string; // Contract code like CLH2026
+    call: {
+      last: string;
+      bid: string;
+      ask: string;
+      volume: string;
+      openInterest: string;
+      iv: number;
+      delta: string;
+      gamma: string;
+      theta: string;
+    } | null;
+    put: {
+      last: string;
+      bid: string;
+      ask: string;
+      volume: string;
+      openInterest: string;
+      iv: number;
+      delta: string;
+      gamma: string;
+      theta: string;
+    } | null;
+  }>;
+}
+
 // In-flight request deduplication
 const symbolsInflight = new Map<string, Promise<TVForexSymbol[]>>();
 const futuresInflight = new Map<string, Promise<TVForexFutures[]>>();
 const optionsInflight = new Map<string, Promise<TVForexOptionsChain | null>>();
+const optionsByStrikeInflight = new Map<string, Promise<TVForexOptionsByStrike | null>>();
 const maturitiesInflight = new Map<string, Promise<string[]>>();
-
-// Default symbols if API fails
-const DEFAULT_SYMBOLS: TVForexSymbol[] = [
-  { symbol: '6E1!', name: 'Euro FX Futures', exchange: 'CME', price: '1.1700', change: '0', changePercent: '0%' },
-  { symbol: '6B1!', name: 'British Pound Futures', exchange: 'CME', price: '1.3400', change: '0', changePercent: '0%' },
-  { symbol: '6J1!', name: 'Japanese Yen Futures', exchange: 'CME', price: '0.0064', change: '0', changePercent: '0%' },
-  { symbol: '6A1!', name: 'Australian Dollar Futures', exchange: 'CME', price: '0.6700', change: '0', changePercent: '0%' },
-  { symbol: '6C1!', name: 'Canadian Dollar Futures', exchange: 'CME', price: '0.7200', change: '0', changePercent: '0%' },
-  { symbol: '6S1!', name: 'Swiss Franc Futures', exchange: 'CME', price: '1.2600', change: '0', changePercent: '0%' },
-  { symbol: '6N1!', name: 'New Zealand Dollar Futures', exchange: 'CME', price: '0.5800', change: '0', changePercent: '0%' },
-  { symbol: '6M1!', name: 'Mexican Peso Futures', exchange: 'CME', price: '0.0550', change: '0', changePercent: '0%' },
-  { symbol: 'DX1!', name: 'US Dollar Index Futures', exchange: 'ICEUS', price: '98.00', change: '0', changePercent: '0%' },
-  { symbol: 'BTC1!', name: 'Bitcoin Futures', exchange: 'CME', price: '90000', change: '0', changePercent: '0%' },
-  { symbol: 'ETH1!', name: 'Ether Futures', exchange: 'CME', price: '3100', change: '0', changePercent: '0%' },
-];
+const strikesInflight = new Map<string, Promise<number[]>>();
 
 export async function fetchTVForexSymbols(): Promise<TVForexSymbol[]> {
   const cacheKey = 'tv-forex-symbols';
@@ -86,19 +106,19 @@ export async function fetchTVForexSymbols(): Promise<TVForexSymbol[]> {
 
       if (error) {
         console.error('Edge function error:', error);
-        return DEFAULT_SYMBOLS;
+        throw new Error(error.message || 'Failed to fetch TV forex symbols');
       }
 
       if (!data?.success || !data?.data?.length) {
-        console.warn('No TV forex symbols returned, using defaults');
-        return DEFAULT_SYMBOLS;
+        console.warn('No TV forex symbols returned from scraping');
+        return [];
       }
 
       console.log(`Fetched ${data.data.length} TV forex symbols`);
       return data.data;
     } catch (err) {
       console.error('Failed to fetch TV forex symbols:', err);
-      return DEFAULT_SYMBOLS;
+      throw err;
     } finally {
       symbolsInflight.delete(cacheKey);
     }
@@ -130,12 +150,18 @@ export async function fetchTVForexFutures(symbol: TVForexSymbol): Promise<TVFore
       }
 
       if (!data?.success) {
-        console.warn('No TV forex futures returned');
+        console.warn('No TV forex futures returned:', data);
         return [];
       }
 
-      console.log(`Fetched ${data.data?.length || 0} TV forex futures contracts`);
-      return data.data || [];
+      const contracts = data.data || [];
+      console.log(`Fetched ${contracts.length} TV forex futures contracts`);
+      
+      if (contracts.length === 0) {
+        console.warn('Empty contracts array returned from scrape-tv-forex-futures');
+      }
+      
+      return contracts;
     } catch (err) {
       console.error('Failed to fetch TV forex futures:', err);
       return [];
@@ -238,5 +264,93 @@ export async function fetchTVForexOptions(
   })();
 
   optionsInflight.set(cacheKey, promise);
+  return promise;
+}
+
+/**
+ * Fetch available strikes from DB cache for a TV Forex symbol
+ */
+export async function fetchTVForexStrikes(exchange: string, symbol: string): Promise<number[]> {
+  const cacheKey = `tv-forex-strikes-${exchange}-${symbol}`;
+
+  if (strikesInflight.has(cacheKey)) {
+    return strikesInflight.get(cacheKey)!;
+  }
+
+  const promise = (async () => {
+    try {
+      console.log(`Fetching TV forex strikes from DB for ${exchange}-${symbol}...`);
+      const { data, error } = await supabase.functions.invoke('get-strikes', {
+        body: { exchange, symbol },
+      });
+
+      if (error) {
+        console.error('Error fetching TV forex strikes from DB:', error);
+        return [];
+      }
+
+      if (data?.success && data?.data) {
+        return data.data as number[];
+      }
+
+      return [];
+    } catch (err) {
+      console.error('Failed to fetch TV forex strikes from DB:', err);
+      return [];
+    } finally {
+      strikesInflight.delete(cacheKey);
+    }
+  })();
+
+  strikesInflight.set(cacheKey, promise);
+  return promise;
+}
+
+// Fetch options by strike (NEW - all maturities for a strike)
+export async function fetchTVForexOptionsByStrike(
+  symbol: TVForexSymbol,
+  strike: number
+): Promise<TVForexOptionsByStrike | null> {
+  const cacheKey = `tv-forex-options-strike-${symbol.exchange}-${symbol.symbol}-${strike}`;
+  
+  const existing = optionsByStrikeInflight.get(cacheKey);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async (): Promise<TVForexOptionsByStrike | null> => {
+    try {
+      console.log(`Fetching TV forex options by strike for ${symbol.symbol}, strike: ${strike}...`);
+      
+      const { data, error } = await supabase.functions.invoke('scrape-tv-forex-options', {
+        body: { 
+          symbol: symbol.symbol, 
+          exchange: symbol.exchange,
+          strike: strike,
+          viewMode: 'strike'
+        },
+      });
+
+      if (error) {
+        console.error('Edge function error:', error);
+        return null;
+      }
+
+      if (!data?.success || !data?.data) {
+        console.warn('No TV forex options by strike returned');
+        return null;
+      }
+
+      console.log(`Fetched ${data.data.maturities?.length || 0} maturities for strike ${strike}`);
+      return data.data as TVForexOptionsByStrike;
+    } catch (err) {
+      console.error('Failed to fetch TV forex options by strike:', err);
+      return null;
+    } finally {
+      optionsByStrikeInflight.delete(cacheKey);
+    }
+  })();
+
+  optionsByStrikeInflight.set(cacheKey, promise);
   return promise;
 }

@@ -1,5 +1,6 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getMaturitiesFromDB, saveMaturitiesToDB } from "../_shared/db-cache.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -77,18 +78,44 @@ serve(async (req) => {
     const cacheKey = symbol;
 
     if (!forceRefresh) {
+      // 1. Check in-memory cache first (fastest)
       const cached = getFromCache(cache, cacheKey);
       if (cached) {
         const cacheAge = Math.round((Date.now() - cached.createdAt) / 1000);
-        console.log(`Maturities cache hit for ${symbol} (age: ${cacheAge}s)`);
+        console.log(`In-memory maturities cache hit for ${symbol} (age: ${cacheAge}s)`);
         return new Response(JSON.stringify({ ...cached.data, fromCache: true, cacheAge }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // 2. Check DB cache (persistent)
+      const dbCached = await getMaturitiesFromDB(symbol);
+      if (dbCached && dbCached.maturities.length > 0) {
+        console.log(`DB maturities cache hit for ${symbol} (${dbCached.maturities.length} maturities)`);
+        
+        // Also update in-memory cache for faster next access
+        const now = Date.now();
+        cache.set(cacheKey, {
+          createdAt: now,
+          expiresAt: now + CACHE_TTL_MS,
+          data: dbCached,
+        });
+        
+        return new Response(JSON.stringify({
+          ...dbCached,
+          fromDBCache: true,
+        }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
     } else {
       console.log(`Force refresh maturities for ${symbol}`);
       cache.delete(cacheKey);
+      // Also delete from DB if force refresh
+      // (We'll let it expire naturally, or could add delete function)
     }
+    
+    console.log(`No cache found for ${symbol}, will scrape...`);
 
     const existing = inflight.get(cacheKey);
     const isOwner = !existing;
@@ -172,13 +199,38 @@ Do not skip rows.`,
 
           const maturities = normalizeMaturities(symbol, rows);
 
-          console.log(`Normalized maturities: ${maturities.length}`);
+          console.log(`[scrape-barchart-maturities] Normalized maturities: ${maturities.length} for symbol: ${symbol}`);
+          if (maturities.length === 0) {
+            console.warn(`[scrape-barchart-maturities] WARNING: No maturities parsed for symbol ${symbol}!`);
+          } else {
+            console.log(`[scrape-barchart-maturities] First 3 maturities:`, maturities.slice(0, 3).map(m => `${m.code} (${m.label})`).join(', '));
+          }
 
-          return {
+          const result = {
             success: maturities.length > 0,
             symbol,
             maturities,
           };
+
+          // Save to DB cache for persistence (async, don't wait)
+          if (maturities.length > 0) {
+            console.log(`[scrape-barchart-maturities] Attempting to save ${maturities.length} maturities to DB for symbol: ${symbol}`);
+            saveMaturitiesToDB(symbol, maturities, 30)
+              .then((success) => {
+                if (success) {
+                  console.log(`[scrape-barchart-maturities] ✅ Successfully saved ${maturities.length} maturities to DB for symbol: ${symbol}`);
+                } else {
+                  console.error(`[scrape-barchart-maturities] ❌ Failed to save maturities to DB for symbol: ${symbol} (saveMaturitiesToDB returned false)`);
+                }
+              })
+              .catch((err) => {
+                console.error('[scrape-barchart-maturities] ❌ Error saving maturities to DB (non-blocking):', err);
+              });
+          } else {
+            console.warn(`[scrape-barchart-maturities] ⚠️ Skipping DB save: maturities.length is 0 for symbol: ${symbol}`);
+          }
+
+          return result;
         } catch (error) {
           console.error('Error in scrape-barchart-maturities:', error);
           const errorMessage = error instanceof Error ? error.message : 'Failed to scrape maturities';
