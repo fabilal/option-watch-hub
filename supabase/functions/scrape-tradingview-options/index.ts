@@ -156,7 +156,7 @@ serve(async (req) => {
       try {
         // Choose schema and prompt based on mode
         let schema: any;
-        let prompt: string;
+        let prompt: string = '';
         let formats: string[];
         
         if (mode === 'strike') {
