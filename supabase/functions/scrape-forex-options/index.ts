@@ -34,8 +34,8 @@ interface CacheEntry {
   data: OptionsChain | null;
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<OptionsChain | null>>();

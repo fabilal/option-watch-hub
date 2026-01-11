@@ -62,9 +62,9 @@ type OptionsCacheEntry = {
   data: OptionsChainResponse;
 };
 
-// Cache TTL: 15 minutes for successful data, 30 seconds for errors
-const OPTIONS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const OPTIONS_NEGATIVE_CACHE_TTL_MS = 30_000; // 30 seconds
+// Cache TTL: 24 hours for successful data, 5 minutes for errors
+const OPTIONS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const OPTIONS_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const optionsCache = new Map<string, OptionsCacheEntry>();
 const optionsInflight = new Map<string, Promise<OptionsChainResponse>>();
 

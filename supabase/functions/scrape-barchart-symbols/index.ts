@@ -20,8 +20,8 @@ type SymbolsCacheEntry = {
   data: { success: boolean; category: string; symbols: FuturesSymbol[]; error?: string; code?: 'RATE_LIMIT' | 'SCRAPE_FAILED'; retryAfterSeconds?: number };
 };
 
-const SYMBOLS_CACHE_TTL_MS = 10 * 60_000; // 10 minutes
-const SYMBOLS_NEGATIVE_CACHE_TTL_MS = 30_000;
+const SYMBOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const SYMBOLS_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const symbolsCache = new Map<string, SymbolsCacheEntry>();
 const symbolsInflight = new Map<string, Promise<SymbolsCacheEntry['data']>>();
 
