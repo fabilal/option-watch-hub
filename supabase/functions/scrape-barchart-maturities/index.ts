@@ -215,7 +215,7 @@ Do not skip rows.`,
           // Save to DB cache for persistence (async, don't wait)
           if (maturities.length > 0) {
             console.log(`[scrape-barchart-maturities] Attempting to save ${maturities.length} maturities to DB for symbol: ${symbol}`);
-            saveMaturitiesToDB(symbol, maturities, 30)
+            saveMaturitiesToDB(symbol, maturities, 'barchart', 30)
               .then((success) => {
                 if (success) {
                   console.log(`[scrape-barchart-maturities] ✅ Successfully saved ${maturities.length} maturities to DB for symbol: ${symbol}`);

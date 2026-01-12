@@ -1,5 +1,6 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getOptionsFromDB, saveOptionsToDB, type OptionData as DBOptionData } from "../_shared/db-cache.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -97,14 +98,72 @@ serve(async (req) => {
 
     // Check cache unless forceRefresh is requested
     if (!forceRefresh) {
+      // 1. Check in-memory cache first (fastest)
       const cached = getFromCache(optionsCache, cacheKey);
       if (cached) {
         const cacheAge = Math.round((Date.now() - cached.createdAt) / 1000);
-        console.log(`Cache hit for ${cacheKey} (age: ${cacheAge}s)`);
+        console.log(`[scrape-barchart-options] In-memory cache hit for ${cacheKey} (age: ${cacheAge}s)`);
         return new Response(JSON.stringify({
           ...cached.data,
           fromCache: true,
           cacheAge
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // 2. Check DB cache (persistent)
+      const dbCached = await getOptionsFromDB(symbol, maturityCode, 'barchart');
+      if (dbCached && (dbCached.calls.length > 0 || dbCached.puts.length > 0)) {
+        console.log(`[scrape-barchart-options] DB cache hit for ${cacheKey} (${dbCached.calls.length} calls, ${dbCached.puts.length} puts)`);
+        
+        // Convert to local format
+        const cachedData: OptionsChainResponse = {
+          success: true,
+          symbol: fullSymbol,
+          name: name || fullSymbol,
+          maturity: dbCached.maturity,
+          daysToExpiration: 0,
+          impliedVolatility: 0,
+          priceOfOptionPoint: optionPointValue || 1000,
+          calls: dbCached.calls.map(c => ({
+            strike: parseFloat(c.strike) || 0,
+            type: 'Call' as const,
+            latest: c.last,
+            iv: parseFloat(c.iv) || 0,
+            delta: parseFloat(c.delta || '0'),
+            gamma: parseFloat(c.gamma || '0'),
+            theta: parseFloat(c.theta || '0'),
+            vega: parseFloat(c.vega || '0'),
+            ivSkew: 0,
+            lastTrade: '',
+          })),
+          puts: dbCached.puts.map(p => ({
+            strike: parseFloat(p.strike) || 0,
+            type: 'Put' as const,
+            latest: p.last,
+            iv: parseFloat(p.iv) || 0,
+            delta: parseFloat(p.delta || '0'),
+            gamma: parseFloat(p.gamma || '0'),
+            theta: parseFloat(p.theta || '0'),
+            vega: parseFloat(p.vega || '0'),
+            ivSkew: 0,
+            lastTrade: '',
+          })),
+          fromCache: true,
+        };
+        
+        // Update in-memory cache
+        const now = Date.now();
+        optionsCache.set(cacheKey, {
+          createdAt: now,
+          expiresAt: now + OPTIONS_CACHE_TTL_MS,
+          data: cachedData,
+        });
+        
+        return new Response(JSON.stringify({
+          ...cachedData,
+          fromDBCache: true,
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -342,6 +401,49 @@ serve(async (req) => {
       const parsedData = await workPromise;
 
       console.log(`Final result - Calls: ${parsedData.calls.length}, Puts: ${parsedData.puts.length}`);
+
+      // Save to DB cache if successful
+      if (parsedData.success && (parsedData.calls.length > 0 || parsedData.puts.length > 0)) {
+        const dbCalls: DBOptionData[] = parsedData.calls.map(c => ({
+          strike: String(c.strike),
+          last: c.latest,
+          change: '',
+          bid: '',
+          ask: '',
+          volume: '',
+          openInterest: '',
+          iv: String(c.iv),
+          delta: String(c.delta),
+          gamma: String(c.gamma),
+          theta: String(c.theta),
+          vega: String(c.vega),
+        }));
+        
+        const dbPuts: DBOptionData[] = parsedData.puts.map(p => ({
+          strike: String(p.strike),
+          last: p.latest,
+          change: '',
+          bid: '',
+          ask: '',
+          volume: '',
+          openInterest: '',
+          iv: String(p.iv),
+          delta: String(p.delta),
+          gamma: String(p.gamma),
+          theta: String(p.theta),
+          vega: String(p.vega),
+        }));
+        
+        saveOptionsToDB(symbol, maturityCode, dbCalls, dbPuts, 'barchart', 24)
+          .then((success) => {
+            if (success) {
+              console.log(`[scrape-barchart-options] ✅ Saved options to DB for ${fullSymbol}`);
+            }
+          })
+          .catch((err) => {
+            console.error('[scrape-barchart-options] Error saving to DB:', err);
+          });
+      }
 
       // Cache the result
       const now = Date.now();
