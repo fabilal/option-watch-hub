@@ -1,6 +1,6 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
+import { getFuturesFromDB, saveFuturesToDB, type FuturesData } from "../_shared/db-cache.ts";
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -66,11 +66,37 @@ serve(async (req) => {
 
     const cacheKey = symbol;
 
-    // Check cache
+    // 1. Check in-memory cache first (fastest)
     const cached = getFromCache(cache, cacheKey);
     if (cached) {
-      console.log(`Cache hit for futures ${cacheKey}`);
+      console.log(`[scrape-barchart-futures] In-memory cache hit for ${cacheKey}`);
       return new Response(JSON.stringify(cached), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // 2. Check DB cache (persistent)
+    const dbCached = await getFuturesFromDB(symbol, 'barchart');
+    if (dbCached && dbCached.futures.length > 0) {
+      console.log(`[scrape-barchart-futures] DB cache hit for ${cacheKey} (${dbCached.futures.length} contracts)`);
+      
+      const cachedData: FuturesPricesResponse = {
+        success: true,
+        symbol,
+        name: name || symbol,
+        futures: dbCached.futures,
+      };
+      
+      // Update in-memory cache
+      cache.set(cacheKey, {
+        expiresAt: Date.now() + CACHE_TTL_MS,
+        data: cachedData,
+      });
+      
+      return new Response(JSON.stringify({
+        ...cachedData,
+        fromDBCache: true,
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
@@ -250,6 +276,19 @@ serve(async (req) => {
       const parsedData = await workPromise;
 
       console.log(`Parsed ${parsedData.futures.length} futures contracts`);
+
+      // Save to DB cache if successful
+      if (parsedData.success && parsedData.futures.length > 0) {
+        saveFuturesToDB(symbol, parsedData.futures, 'barchart', 24)
+          .then((success) => {
+            if (success) {
+              console.log(`[scrape-barchart-futures] ✅ Saved ${parsedData.futures.length} futures to DB for ${symbol}`);
+            }
+          })
+          .catch((err) => {
+            console.error('[scrape-barchart-futures] Error saving to DB:', err);
+          });
+      }
 
       cache.set(cacheKey, {
         expiresAt: Date.now() + (parsedData.success ? CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS),

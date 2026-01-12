@@ -14,13 +14,240 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      scraped_futures: {
+        Row: {
+          change: string | null
+          contract: string
+          created_at: string
+          expires_at: string
+          high: string | null
+          id: string
+          last: string | null
+          low: string | null
+          month: string | null
+          open: string | null
+          open_interest: string | null
+          percent_change: string | null
+          source: string | null
+          symbol: string
+          time: string | null
+          volume: string | null
+        }
+        Insert: {
+          change?: string | null
+          contract: string
+          created_at?: string
+          expires_at: string
+          high?: string | null
+          id?: string
+          last?: string | null
+          low?: string | null
+          month?: string | null
+          open?: string | null
+          open_interest?: string | null
+          percent_change?: string | null
+          source?: string | null
+          symbol: string
+          time?: string | null
+          volume?: string | null
+        }
+        Update: {
+          change?: string | null
+          contract?: string
+          created_at?: string
+          expires_at?: string
+          high?: string | null
+          id?: string
+          last?: string | null
+          low?: string | null
+          month?: string | null
+          open?: string | null
+          open_interest?: string | null
+          percent_change?: string | null
+          source?: string | null
+          symbol?: string
+          time?: string | null
+          volume?: string | null
+        }
+        Relationships: []
+      }
+      scraped_maturities: {
+        Row: {
+          code: string
+          created_at: string
+          expiration: string | null
+          expires_at: string
+          id: string
+          label: string
+          source: string | null
+          symbol: string
+          updated_at: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          expiration?: string | null
+          expires_at: string
+          id?: string
+          label: string
+          source?: string | null
+          symbol: string
+          updated_at?: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          expiration?: string | null
+          expires_at?: string
+          id?: string
+          label?: string
+          source?: string | null
+          symbol?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      scraped_options: {
+        Row: {
+          ask: string | null
+          bid: string | null
+          change: string | null
+          created_at: string
+          delta: string | null
+          expires_at: string
+          gamma: string | null
+          id: string
+          iv: string | null
+          last: string | null
+          maturity: string
+          open_interest: string | null
+          option_type: string
+          source: string | null
+          strike: string
+          symbol: string
+          theta: string | null
+          vega: string | null
+          volume: string | null
+        }
+        Insert: {
+          ask?: string | null
+          bid?: string | null
+          change?: string | null
+          created_at?: string
+          delta?: string | null
+          expires_at: string
+          gamma?: string | null
+          id?: string
+          iv?: string | null
+          last?: string | null
+          maturity: string
+          open_interest?: string | null
+          option_type: string
+          source?: string | null
+          strike: string
+          symbol: string
+          theta?: string | null
+          vega?: string | null
+          volume?: string | null
+        }
+        Update: {
+          ask?: string | null
+          bid?: string | null
+          change?: string | null
+          created_at?: string
+          delta?: string | null
+          expires_at?: string
+          gamma?: string | null
+          id?: string
+          iv?: string | null
+          last?: string | null
+          maturity?: string
+          open_interest?: string | null
+          option_type?: string
+          source?: string | null
+          strike?: string
+          symbol?: string
+          theta?: string | null
+          vega?: string | null
+          volume?: string | null
+        }
+        Relationships: []
+      }
+      scraped_strikes: {
+        Row: {
+          created_at: string
+          exchange: string
+          expires_at: string
+          id: string
+          strike: number
+          symbol: string
+        }
+        Insert: {
+          created_at?: string
+          exchange: string
+          expires_at: string
+          id?: string
+          strike: number
+          symbol: string
+        }
+        Update: {
+          created_at?: string
+          exchange?: string
+          expires_at?: string
+          id?: string
+          strike?: number
+          symbol?: string
+        }
+        Relationships: []
+      }
+      scraped_symbols: {
+        Row: {
+          category: string
+          change: string | null
+          created_at: string
+          expires_at: string
+          id: string
+          latest: string | null
+          name: string
+          source: string | null
+          symbol: string
+          updated_at: string
+          volume: string | null
+        }
+        Insert: {
+          category: string
+          change?: string | null
+          created_at?: string
+          expires_at: string
+          id?: string
+          latest?: string | null
+          name: string
+          source?: string | null
+          symbol: string
+          updated_at?: string
+          volume?: string | null
+        }
+        Update: {
+          category?: string
+          change?: string | null
+          created_at?: string
+          expires_at?: string
+          id?: string
+          latest?: string | null
+          name?: string
+          source?: string | null
+          symbol?: string
+          updated_at?: string
+          volume?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      cleanup_expired_scraped_data: { Args: never; Returns: undefined }
     }
     Enums: {
       [_ in never]: never

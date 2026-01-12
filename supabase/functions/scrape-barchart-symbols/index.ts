@@ -80,18 +80,33 @@ serve(async (req) => {
       }
 
       // 2. Check DB cache (persistent)
-      const dbCached = await getSymbolsFromDB(cacheKey);
+      const dbCached = await getSymbolsFromDB(cacheKey, 'barchart');
       if (dbCached && dbCached.symbols.length > 0) {
         console.log(`[scrape-barchart-symbols] DB cache hit for symbols: ${cacheKey} (${dbCached.symbols.length} symbols)`);
+        
+        // Convert to FuturesSymbol format with required fields
+        const symbols: FuturesSymbol[] = dbCached.symbols.map(s => ({
+          symbol: s.symbol,
+          name: s.name,
+          latest: s.latest || '',
+          change: s.change || '',
+          volume: s.volume || '',
+        }));
+        
+        const cachedData = {
+          success: true,
+          category: dbCached.category,
+          symbols,
+        };
         
         // Also update in-memory cache for faster next access
         symbolsCache.set(cacheKey, {
           expiresAt: Date.now() + SYMBOLS_CACHE_TTL_MS,
-          data: dbCached,
+          data: cachedData,
         });
         
         return new Response(JSON.stringify({
-          ...dbCached,
+          ...cachedData,
           fromDBCache: true,
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -164,7 +179,7 @@ serve(async (req) => {
         // Save to DB cache for persistence (async, don't wait)
         if (symbols.length > 0) {
           console.log(`[scrape-barchart-symbols] Attempting to save ${symbols.length} symbols to DB for category: ${category}`);
-          saveSymbolsToDB(category, symbols, 7)
+          saveSymbolsToDB(category, symbols, 'barchart', 7)
             .then((success) => {
               if (success) {
                 console.log(`[scrape-barchart-symbols] ✅ Successfully saved ${symbols.length} symbols to DB for category: ${category}`);

@@ -269,7 +269,7 @@ Include all variations (standard, mini, micro versions).`,
             volume: ''
           }));
           
-          saveSymbolsToDB(dbKey, dbSymbols, 7)
+          saveSymbolsToDB(dbKey, dbSymbols, 'tradingview', 7)
             .then((success) => {
               if (success) {
                 console.log(`[scrape-tradingview-symbols] ✅ Successfully saved ${symbols.length} symbols to DB`);
@@ -306,7 +306,7 @@ Include all variations (standard, mini, micro versions).`,
             volume: ''
           }));
           
-          saveSymbolsToDB(dbKey, dbSymbols, 7).catch((err) => {
+          saveSymbolsToDB(dbKey, dbSymbols, 'tradingview', 7).catch((err) => {
             console.error('[scrape-tradingview-symbols] ❌ Error saving fallback symbols to DB:', err);
           });
         }
